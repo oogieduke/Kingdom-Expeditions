@@ -125,6 +125,7 @@ const state = {
   settings: {
     deselectOutside: true,  // single click outside committed zone deselects it
     showGrid: true,
+    zoomFollowsCursor: true, // if false, wheel zoom anchors to viewport center
   },
 };
 
@@ -482,6 +483,7 @@ const elSettingsMenu = $('settings-menu');
 const elOptDeselect = $('opt-deselect-outside');
 const elOptMouseSwap = $('opt-mouse-swap');
 const elOptShowGrid = $('opt-show-grid');
+const elOptZoomCursor = $('opt-zoom-cursor');
 const elMapHint = $('map-hint');
 const elBuildHead = $('build-head');
 const elBuildHeadGrip = $('build-head-grip');
@@ -2125,10 +2127,18 @@ function zoomInterp() {
 elMapScroller.addEventListener('wheel', (e) => {
   e.preventDefault();
   const rect = elMapScroller.getBoundingClientRect();
-  const sx = e.clientX - rect.left;
-  const sy = e.clientY - rect.top;
-  const wx = (elMapScroller.scrollLeft + sx) / zoom;
-  const wy = (elMapScroller.scrollTop + sy) / zoom;
+  let sx, sy, wx, wy;
+  if (state.settings.zoomFollowsCursor) {
+    sx = e.clientX - rect.left;
+    sy = e.clientY - rect.top;
+    wx = (elMapScroller.scrollLeft + sx) / zoom;
+    wy = (elMapScroller.scrollTop + sy) / zoom;
+  } else {
+    sx = elMapScroller.clientWidth / 2;
+    sy = elMapScroller.clientHeight / 2;
+    wx = (elMapScroller.scrollLeft + sx) / zoom;
+    wy = (elMapScroller.scrollTop + sy) / zoom;
+  }
   zoomAnchor = { wx, wy, sx, sy };
   const factor = Math.pow(1.0015, -e.deltaY);
   targetZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, targetZoom * factor));
@@ -2236,6 +2246,7 @@ function applySettingsToUI() {
   elOptMouseSwap.checked = state.mouseMode === 'swapped';
   elOptShowGrid.checked = !!state.settings.showGrid;
   elMapGrid.classList.toggle('hidden', !state.settings.showGrid);
+  elOptZoomCursor.checked = !!state.settings.zoomFollowsCursor;
 }
 
 function toggleSettingsMenu(force) {
@@ -2274,6 +2285,9 @@ elOptShowGrid.addEventListener('change', () => {
   state.settings.showGrid = elOptShowGrid.checked;
   elMapGrid.classList.toggle('hidden', !state.settings.showGrid);
 });
+elOptZoomCursor.addEventListener('change', () => {
+  state.settings.zoomFollowsCursor = elOptZoomCursor.checked;
+});
 
 // ═══════════════════════════════════════════════════════════════
 // BUILD PANEL — header click collapses, grip resizes
@@ -2282,7 +2296,7 @@ elOptShowGrid.addEventListener('change', () => {
 (function wireBuildHead() {
   const pB = $('panel-build');
   let drag = null;
-  let dragMovedPx = 0;
+  let suppressNextClick = false;
 
   elBuildHeadGrip.addEventListener('mousedown', (e) => {
     e.preventDefault();
@@ -2294,13 +2308,13 @@ elOptShowGrid.addEventListener('change', () => {
       hJ: pJ.getBoundingClientRect().height,
       hB: pB.getBoundingClientRect().height,
       maxB: buildPanelNaturalHeight(),
+      moved: false,
     };
-    dragMovedPx = 0;
   });
   window.addEventListener('mousemove', (e) => {
     if (!drag) return;
     const dy = e.clientY - drag.startY;
-    dragMovedPx = Math.max(dragMovedPx, Math.abs(dy));
+    if (Math.abs(dy) > 2) drag.moved = true;
     const total = drag.hJ + drag.hB;
     const nB = Math.max(80, Math.min(drag.maxB, drag.hB - dy));
     const nJ = total - nB;
@@ -2308,14 +2322,13 @@ elOptShowGrid.addEventListener('change', () => {
     $('panel-journal').style.flex = `${nJ} 0 0px`;
     pB.style.flex = `0 0 ${nB}px`;
   });
-  window.addEventListener('mouseup', () => { drag = null; });
+  window.addEventListener('mouseup', () => {
+    if (drag && drag.moved) suppressNextClick = true;
+    drag = null;
+  });
 
-  elBuildHead.addEventListener('click', (e) => {
-    // Ignore clicks that originated from the grip drag (if the user dragged
-    // the grip a tiny bit, we don't want to toggle).
-    if (e.target === elBuildHeadGrip || elBuildHeadGrip.contains(e.target)) {
-      if (dragMovedPx > 3) { dragMovedPx = 0; return; }
-    }
+  elBuildHead.addEventListener('click', () => {
+    if (suppressNextClick) { suppressNextClick = false; return; }
     pB.classList.toggle('collapsed');
   });
 })();

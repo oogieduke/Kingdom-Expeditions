@@ -444,21 +444,22 @@ html, body { margin: 0; padding: 0; height: 100%; background: #1A0F08; color: va
 .hist-when { font-family: var(--font-num); font-size: 10px; color: var(--ink-3); }
 .hist-text { color: var(--ink-2); font-size: 11px; line-height: 1.35; }
 
-#build-list { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+#build-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding-top: 8px; align-content: start; }
 
 .build-item {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr;
   grid-template-rows: auto auto;
   grid-template-areas:
-    "glyph name cost"
-    "btn   btn  btn";
+    "glyph name"
+    "glyph cost"
+    "btn   btn";
   align-items: center;
-  gap: 4px 10px;
+  gap: 3px 8px;
   background: rgba(244,228,193,0.5);
   border: 1px solid rgba(201,166,73,0.4);
   border-radius: 8px;
-  padding: 8px 10px 9px;
+  padding: 8px 9px 9px;
   transition: border-color 150ms, transform 150ms, box-shadow 150ms;
   position: relative;
   cursor: help;
@@ -472,40 +473,43 @@ html, body { margin: 0; padding: 0; height: 100%; background: #1A0F08; color: va
 
 .build-glyph {
   grid-area: glyph;
-  width: 44px; height: 44px;
+  width: 42px; height: 42px;
   display: flex; align-items: center; justify-content: center;
   background: var(--parchment);
   border: 1.5px solid var(--gold-deep);
   border-radius: 6px;
-  font-size: 26px;
+  font-size: 24px;
   box-shadow: inset 0 2px 4px rgba(138,106,32,0.15);
 }
 .build-name {
   grid-area: name;
   font-family: var(--font-title);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--ink);
   letter-spacing: 0.4px;
   text-align: left;
+  align-self: end;
+  line-height: 1.15;
 }
 .build-cost {
   grid-area: cost;
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: center;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  align-self: start;
 }
 .bc {
   display: inline-flex; align-items: center; gap: 3px;
   font-family: var(--font-num);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 700;
-  padding: 2px 8px 2px 4px;
-  border-radius: 5px;
+  padding: 1px 6px 1px 3px;
+  border-radius: 4px;
+  line-height: 1;
 }
-.bc img { width: 20px; height: 20px; image-rendering: pixelated; }
+.bc img { width: 16px; height: 16px; image-rendering: pixelated; }
 .bc.ok { background: rgba(228,195,116,0.38); color: var(--ink); }
 .bc.no { background: rgba(139,46,46,0.14); color: var(--red-deep); text-decoration: line-through; }
 
