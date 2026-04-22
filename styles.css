@@ -556,21 +556,103 @@ html, body { margin: 0; padding: 0; height: 100%; background: #1A0F08; color: va
 .cell.buildable:hover { background: rgba(106,138,74,0.25); }
 
 /* ───── TIMELINE ───── */
-.timeline { position: relative; z-index: 10; background: linear-gradient(0deg, var(--parchment-2) 0%, var(--parchment) 100%); border-top: 2px solid var(--gold); height: 76px; display: flex; align-items: center; padding: 0 16px; gap: 16px; box-shadow: 0 -2px 12px rgba(45,24,16,0.15); }
-.timeline-stamp { display: flex; flex-direction: column; align-items: center; padding: 3px 14px; border: 2px solid var(--gold); border-radius: 6px; background: rgba(244,228,193,0.5); min-width: 120px; flex-shrink: 0; }
-.ts-year { font-family: var(--font-title); font-size: 16px; font-weight: 700; color: var(--ink); }
-.ts-season { font-family: var(--font-ui); font-size: 12px; margin-top: 2px; font-weight: 600; }
-.timeline-track { flex: 1; height: 50px; position: relative; }
-.track-line { position: absolute; top: 50%; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--ink-3) 10%, var(--ink-3) 90%, transparent); transform: translateY(-50%); }
-.tick { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 1px; height: 8px; background: var(--ink-3); }
-.tick.season { height: 12px; background: var(--ink-2); width: 2px; }
-.tick.current { background: var(--red); height: 16px; width: 3px; z-index: 3; }
-.tick .tl-label { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); font-family: var(--font-ui); font-size: 9px; color: var(--ink-2); white-space: nowrap; }
-.event-marker { position: absolute; top: 50%; transform: translate(-50%, -50%); cursor: help; z-index: 2; }
-.event-icon { width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; background: var(--parchment); border: 2px solid var(--gold); border-radius: 50%; font-size: 13px; box-shadow: 0 2px 6px rgba(45,24,16,0.2); transition: transform 150ms; }
-.event-marker:hover .event-icon { transform: scale(1.2); }
-.event-marker:hover .ev-tooltip { opacity: 1; }
-.ev-tooltip { position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--parchment); padding: 5px 9px; border-radius: 4px; font-size: 11px; white-space: nowrap; opacity: 0; transition: opacity 150ms; pointer-events: none; }
+.timeline {
+  position: relative; z-index: 10;
+  background: linear-gradient(0deg, var(--parchment-2) 0%, var(--parchment) 100%);
+  border-top: 2px solid var(--gold);
+  height: 72px;
+  display: flex; align-items: stretch;
+  padding: 10px 16px;
+  gap: 14px;
+  box-shadow: 0 -2px 12px rgba(45,24,16,0.15);
+}
+.timeline-season { flex: 0 0 auto; display: flex; align-items: stretch; gap: 0; }
+.timeline-future { flex: 1; display: flex; align-items: stretch; gap: 6px; margin-left: 6px; }
+
+/* Chevron-shaped month slot — right side points into the next, left side
+   has a matching notch so slots interlock. */
+.tl-season-slot {
+  --fill: 0;
+  position: relative;
+  width: 76px;
+  padding: 0 18px 0 22px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  font-family: var(--font-ui);
+  color: var(--ink-2);
+  background: linear-gradient(180deg, rgba(244,228,193,0.75), rgba(228,195,116,0.4));
+  border: 1px solid rgba(107,68,35,0.35);
+  border-right: none;
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 50%, calc(100% - 14px) 100%, 0 100%, 14px 50%);
+  margin-right: -14px;
+  cursor: help;
+  transition: filter 180ms, transform 120ms;
+  overflow: hidden;
+}
+.tl-season-slot:first-child { clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 50%, calc(100% - 14px) 100%, 0 100%); padding-left: 12px; }
+.tl-season-slot::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(45deg, rgba(201,166,73,0.55) 0 6px, rgba(228,195,116,0.75) 6px 12px);
+  transform-origin: left center;
+  transform: scaleX(var(--fill));
+  transition: transform 180ms linear;
+  pointer-events: none;
+  z-index: 0;
+}
+.tl-season-slot > * { position: relative; z-index: 1; }
+.tl-season-slot.past { filter: grayscale(0.7) brightness(0.88); color: var(--ink-3); }
+.tl-season-slot.past::before { background: repeating-linear-gradient(45deg, rgba(107,68,35,0.25) 0 6px, rgba(107,68,35,0.12) 6px 12px); transform: scaleX(1); }
+.tl-season-slot.current {
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(228,195,116,0.9), 0 2px 6px rgba(45,24,16,0.2);
+}
+.tl-season-slot.current .tl-month-num { color: var(--red-deep); font-weight: 700; }
+.tl-season-slot:hover { filter: brightness(1.06); transform: translateY(-1px); }
+.tl-month-num { font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }
+.tl-month-glyph { font-size: 18px; line-height: 1; margin-top: 2px; }
+
+/* Payment slot — arrow-shaped, distinct tone */
+.tl-pay {
+  position: relative;
+  padding: 0 14px 0 22px;
+  min-width: 120px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  background: linear-gradient(180deg, rgba(208,99,99,0.35), rgba(159,58,58,0.25));
+  border: 1px solid rgba(159,58,58,0.55);
+  border-left: none;
+  clip-path: polygon(14px 0, 100% 0, 100% 100%, 14px 100%, 0 50%);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  cursor: help;
+}
+.tl-pay-label { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+.tl-pay-costs { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
+.tl-pay-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 11px; font-weight: 600;
+  padding: 1px 5px; border-radius: 3px;
+  background: rgba(244,228,193,0.6);
+  border: 1px solid rgba(107,68,35,0.25);
+}
+.tl-pay-chip img { image-rendering: pixelated; }
+
+/* Upcoming-season slots (right half — simpler) */
+.tl-future-slot {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px;
+  font-family: var(--font-ui);
+  color: var(--ink-2);
+  background: rgba(244,228,193,0.35);
+  border: 1px dashed rgba(107,68,35,0.3);
+  border-radius: 5px;
+  padding: 4px 8px;
+  cursor: help;
+  transition: filter 180ms;
+}
+.tl-future-slot:hover { filter: brightness(1.05); }
+.tl-f-glyph { font-size: 16px; line-height: 1; }
+.tl-f-name { font-size: 10px; font-weight: 600; letter-spacing: 0.3px; }
 
 /* ───── EXPEDITION PANEL (in sidebar) ───── */
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }

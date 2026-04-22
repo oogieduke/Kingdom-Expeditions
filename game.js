@@ -1342,6 +1342,7 @@ function tickExpedition(ts) {
     }
   }
 
+  updateTimelineProgress();
   expTimer = requestAnimationFrame(tickExpedition);
 }
 
@@ -1466,8 +1467,8 @@ function finishExpedition() {
   }
   renderAll();
 
-  // season check
-  if (state.monthsAt > 0 && state.monthsAt % 4 === 0 && state.kingAlive) {
+  // season check — at the end of each season (every 3 months)
+  if (state.monthsAt > 0 && state.monthsAt % 3 === 0 && state.kingAlive) {
     setTimeout(() => runSeasonCeremony(), 800);
   }
 }
@@ -1512,23 +1513,26 @@ function advanceMonths(n) {
 // SEASON CEREMONY
 // ═══════════════════════════════════════════════════════════════
 
-function runSeasonCeremony() {
-  const year = currentYear();
-  const seasonIdx = ((currentSeasonIdx() - 1) + 4) % 4;
-  const season = SEASONS[seasonIdx];
+function computeSeasonCosts() {
   const civilians = state.population - state.soldiers - state.generals;
   const hasGranary = state.buildings.some(b => b.id === 'granary');
   const wheatMod = hasGranary ? 0.75 : 1;
-
   const lines = [
     { label: `${civilians} habitants`, costs: { wheat: Math.ceil(civilians * 1 * wheatMod), water: Math.ceil(civilians * 0.5) } },
   ];
   if (state.soldiers) lines.push({ label: `${state.soldiers} soldats`, costs: { wheat: Math.ceil(state.soldiers * 0.5 * wheatMod), gold: state.soldiers * 1, water: Math.ceil(state.soldiers * 0.5) } });
   if (state.generals) lines.push({ label: `${state.generals} généraux`, costs: { gold: state.generals * 2 } });
   if (state.buildings.length) lines.push({ label: `Entretien (${state.buildings.length} bât.)`, costs: { wood: Math.ceil(state.buildings.length / 2) } });
-
   const totals = { wheat: 0, water: 0, gold: 0, wood: 0 };
   for (const l of lines) for (const k of Object.keys(l.costs)) totals[k] = (totals[k] || 0) + l.costs[k];
+  return { lines, totals, civilians };
+}
+
+function runSeasonCeremony() {
+  const year = currentYear();
+  const seasonIdx = ((currentSeasonIdx() - 1) + 4) % 4;
+  const season = SEASONS[seasonIdx];
+  const { lines, totals, civilians } = computeSeasonCosts();
 
   // compute deficits
   const deficits = {};
@@ -1729,34 +1733,112 @@ function adjustBuildPanelHeight() {
 // TIMELINE
 // ═══════════════════════════════════════════════════════════════
 
-function renderTimeline() {
-  const season = SEASONS[currentSeasonIdx()];
-  $('ts-year').textContent = `An ${currentYear()}`;
-  $('ts-season').textContent = `${season.glyph} ${season.name} · M${currentMonth()}`;
-
-  const track = $('timeline-track');
-  // keep only .track-line, rebuild everything else
-  track.querySelectorAll('.tick, .event-marker').forEach(n => n.remove());
-
-  // show 24 months from current-3 to current+20
-  const from = Math.max(0, state.monthsAt - 3);
-  const to = from + 24;
-  for (let m = from; m <= to; m++) {
-    const pct = ((m - from) / (to - from)) * 100;
-    const tick = document.createElement('div');
-    const isSeasonBreak = m % 3 === 0;
-    const isCurrent = m === state.monthsAt;
-    tick.className = 'tick' + (isSeasonBreak ? ' season' : '') + (isCurrent ? ' current' : '');
-    tick.style.left = pct + '%';
-    if (isSeasonBreak) {
-      const lbl = document.createElement('span');
-      lbl.className = 'tl-label';
-      const si = Math.floor((m % 12) / 3);
-      const yr = Math.floor(m / 12) + 1;
-      lbl.textContent = `${SEASONS[si].glyph}${m % 12 === 0 ? ' An '+yr : ''}`;
-      tick.appendChild(lbl);
+// Update just the per-month fill bars — called each expedition tick so the
+// progress texture advances smoothly without re-rendering the whole timeline.
+function updateTimelineProgress() {
+  const now = state.monthsAt;
+  const seasonStart = now - (now % 3);
+  const exp = state.expedition;
+  const f = exp ? expeditionProgress() : null;
+  const elapsedMonths = (exp && f != null) ? f * exp.duration : 0;
+  const seasonEl = $('timeline-season');
+  if (!seasonEl) return;
+  for (let i = 0; i < 3; i++) {
+    const slot = seasonEl.querySelector(`.tl-season-slot[data-i="${i}"]`);
+    if (!slot) continue;
+    const m = seasonStart + i;
+    let fill = 0;
+    if (m < now) fill = 1;
+    else if (m === now && exp) fill = Math.max(0, Math.min(1, elapsedMonths - (m - now)));
+    else if (m > now && exp) {
+      const rel = m - now;
+      if (rel < exp.duration) fill = Math.max(0, Math.min(1, elapsedMonths - rel));
     }
-    track.appendChild(tick);
+    slot.style.setProperty('--fill', fill);
+  }
+}
+
+// Returns progress fraction [0,1] of the active expedition, or null if idle.
+function expeditionProgress() {
+  const exp = state.expedition;
+  if (!exp) return null;
+  const outLen = exp.outPath.length;
+  const visitLen = exp.visitList.length;
+  const retLen = exp.returnPath.length;
+  const total = outLen + visitLen + retLen;
+  let done = 0;
+  if (exp.phase === 'out')    done = exp.pathIdx;
+  else if (exp.phase === 'visit') done = outLen + exp.visitIdx;
+  else if (exp.phase === 'return') done = outLen + visitLen + exp.pathIdx;
+  else if (exp.phase === 'done')   done = total;
+  return Math.max(0, Math.min(1, done / total));
+}
+
+function renderTimeline() {
+  const now = state.monthsAt;
+  const seasonStart = now - (now % 3);
+  const seasonIdx = currentSeasonIdx();
+  const monthInSeason = now % 3; // 0,1,2
+
+  // Expedition: fraction of months elapsed since start of journey
+  const exp = state.expedition;
+  let expSpan = null;
+  if (exp) {
+    const f = expeditionProgress();
+    const elapsed = f * exp.duration;
+    // Expedition started at `now - floor(elapsed)` approximately. We track only
+    // the active expedition — its starting month is `now` minus months already
+    // counted. Simplest: fill from `now` backward? No — expeditions advance
+    // the clock only on completion, so `now` is the month they started.
+    expSpan = { startMonth: now, duration: exp.duration, elapsedMonths: elapsed };
+  }
+
+  const seasonEl = $('timeline-season');
+  // 3 month slots
+  for (let i = 0; i < 3; i++) {
+    const slot = seasonEl.querySelector(`.tl-season-slot[data-i="${i}"]`);
+    const m = seasonStart + i;
+    const isPast = m < now;
+    const isCurrent = m === now;
+    const isFuture = m > now;
+    slot.classList.toggle('past', isPast);
+    slot.classList.toggle('current', isCurrent);
+    slot.classList.toggle('future', isFuture);
+    let fill = 0;
+    if (isPast) fill = 1;
+    else if (expSpan) {
+      // slot represents month m. Expedition covers months startMonth..startMonth+duration-1
+      const relStart = m - expSpan.startMonth;
+      if (relStart >= 0 && relStart < expSpan.duration) {
+        const local = expSpan.elapsedMonths - relStart;
+        fill = Math.max(0, Math.min(1, local));
+      }
+    }
+    slot.style.setProperty('--fill', fill);
+    slot.innerHTML = `
+      <span class="tl-month-num">M${i + 1}</span>
+      <span class="tl-month-glyph">${SEASONS[seasonIdx].glyph}</span>
+    `;
+    slot.title = isCurrent ? 'Mois en cours' : (isPast ? 'Mois passé' : 'À venir');
+  }
+
+  // Payment slot — previews next tribute cost
+  const payEl = $('tl-pay');
+  const { totals } = computeSeasonCosts();
+  const costChips = Object.entries(totals).filter(([, v]) => v > 0)
+    .map(([k, v]) => `<span class="tl-pay-chip"><img src="${RES[k].icon}" width="14" height="14">${v}</span>`)
+    .join('');
+  payEl.innerHTML = `<span class="tl-pay-label">💰 Tribut</span><span class="tl-pay-costs">${costChips || '—'}</span>`;
+  payEl.title = `Paiement à la fin du ${SEASONS[seasonIdx].name}`;
+
+  // Upcoming 3 seasons
+  const futureEl = $('timeline-future');
+  for (let i = 0; i < 3; i++) {
+    const slot = futureEl.querySelector(`.tl-future-slot[data-i="${i}"]`);
+    const nextSi = (seasonIdx + 1 + i) % 4;
+    const s = SEASONS[nextSi];
+    slot.innerHTML = `<span class="tl-f-glyph">${s.glyph}</span><span class="tl-f-name">${s.name}</span>`;
+    slot.title = s.name;
   }
 }
 
@@ -1808,18 +1890,6 @@ $('journal-clear').onclick = () => { state.journal = []; renderJournal(); };
 $('king-slot').onclick = () => {
   const ks = kingStateEntry();
   toast('info', `Roi — ${ks.label}`, `Âge: ${state.kingAge} ans · Stress: ${state.kingStress}/100 · Mortalité: ${(ks.mortality*100).toFixed(0)}% /saison`);
-};
-
-$('btn-fete').onclick = () => {
-  if (state.festivalUsedYear === currentYear()) { toast('bad', 'Fête déjà organisée', 'Une seule fête par an.'); return; }
-  const cost = { wheat: 10, gold: 10, water: 5 };
-  if (!canAfford(cost)) { toast('bad', 'Fonds insuffisants', 'Il faut 10 blé · 10 or · 5 eau.'); return; }
-  for (const k of Object.keys(cost)) { state.resources[k] -= cost[k]; flashSlot(k, 'minus'); }
-  state.kingStress = Math.max(0, state.kingStress - 15);
-  state.festivalUsedYear = currentYear();
-  addJournal('🎉 Fête royale — le peuple se réjouit.', 'good');
-  toast('good', 'Fête royale !', 'Stress du roi réduit de 15.');
-  renderAll();
 };
 
 // ═══════════════════════════════════════════════════════════════

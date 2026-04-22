@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=4">
+<link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
 <div id="app" class="app">
@@ -133,14 +133,17 @@
 
     <!-- TIMELINE -->
     <footer class="timeline">
-      <div class="timeline-stamp">
-        <div class="ts-year" id="ts-year">An 1</div>
-        <div class="ts-season" id="ts-season">🌸 Printemps · M1</div>
+      <div class="timeline-season" id="timeline-season">
+        <div class="tl-season-slot" data-i="0"></div>
+        <div class="tl-season-slot" data-i="1"></div>
+        <div class="tl-season-slot" data-i="2"></div>
+        <div class="tl-pay" id="tl-pay"></div>
       </div>
-      <div class="timeline-track" id="timeline-track">
-        <div class="track-line"></div>
+      <div class="timeline-future" id="timeline-future">
+        <div class="tl-future-slot" data-i="0"></div>
+        <div class="tl-future-slot" data-i="1"></div>
+        <div class="tl-future-slot" data-i="2"></div>
       </div>
-      <button class="btn btn-ghost" id="btn-fete" title="Organiser une fête royale">🎉 FÊTE</button>
     </footer>
 
   </div>
@@ -158,6 +161,6 @@
   <div class="flight-layer" id="flight-layer"></div>
 </div>
 
-<script src="game.js?v=5"></script>
+<script src="game.js?v=6"></script>
 </body>
 </html>
