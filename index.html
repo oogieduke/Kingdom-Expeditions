@@ -39,12 +39,13 @@
         </div>
       </div>
 
-      <!-- Splitter -->
-      <div class="sb-splitter" id="sb-splitter" title="Glissez pour redimensionner"></div>
-
       <!-- BOTTOM : Construction -->
       <div class="panel panel-build" id="panel-build">
-        <div class="panel-head">🔨 Construction</div>
+        <div class="panel-head build-head" id="build-head" title="Cliquer pour replier / déplier">
+          <span class="build-head-title">🔨 Construction</span>
+          <span class="build-head-chevron" id="build-chevron">▾</span>
+          <span class="build-head-grip" id="build-head-grip" title="Glisser pour redimensionner"></span>
+        </div>
         <div class="panel-scroll" id="build-list"></div>
       </div>
     </div>
@@ -89,7 +90,7 @@
           </div>
           <div class="settings-wrap">
             <button class="settings-btn" id="settings-btn" title="Options" aria-label="Options">
-              <img src="assets/icons/settings.png?v=2" alt="" class="settings-icon" width="24" height="24">
+              <img src="assets/icons/parameters.png?v=3" alt="" class="settings-icon" width="24" height="24">
             </button>
             <div class="settings-menu" id="settings-menu" hidden>
               <div class="settings-title">Options</div>

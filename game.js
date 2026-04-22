@@ -483,7 +483,8 @@ const elOptDeselect = $('opt-deselect-outside');
 const elOptMouseSwap = $('opt-mouse-swap');
 const elOptShowGrid = $('opt-show-grid');
 const elMapHint = $('map-hint');
-const elSplitter = $('sb-splitter');
+const elBuildHead = $('build-head');
+const elBuildHeadGrip = $('build-head-grip');
 
 // ═══════════════════════════════════════════════════════════════
 // RENDER: TOP BAR
@@ -2134,6 +2135,26 @@ elMapScroller.addEventListener('wheel', (e) => {
   if (zoomRaf === null) zoomRaf = requestAnimationFrame(zoomInterp);
 }, { passive: false });
 
+// Wheel zoom on minimap — same smooth interp, but world-anchored at the minimap
+// cursor and targeting the main viewport's center.
+elMinimapWrap.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const wrapRect = elMinimapWrap.getBoundingClientRect();
+  const mx = e.clientX - wrapRect.left;
+  const my = e.clientY - wrapRect.top;
+  // Minimap → world pixels (world size in px = MAP_SIZE * TILE, displayed in wrapRect)
+  const worldPx = MAP_SIZE * TILE;
+  const wx = (mx / wrapRect.width) * worldPx;
+  const wy = (my / wrapRect.height) * worldPx;
+  // Keep (wx, wy) at the center of the main viewport
+  const sx = elMapScroller.clientWidth / 2;
+  const sy = elMapScroller.clientHeight / 2;
+  zoomAnchor = { wx, wy, sx, sy };
+  const factor = Math.pow(1.0015, -e.deltaY);
+  targetZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, targetZoom * factor));
+  if (zoomRaf === null) zoomRaf = requestAnimationFrame(zoomInterp);
+}, { passive: false });
+
 elMapScroller.addEventListener('scroll', updateMinimapViewport);
 window.addEventListener('resize', updateMinimapViewport);
 
@@ -2255,34 +2276,48 @@ elOptShowGrid.addEventListener('change', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// SIDEBAR SPLITTER
+// BUILD PANEL — header click collapses, grip resizes
 // ═══════════════════════════════════════════════════════════════
 
-(function wireSplitter() {
+(function wireBuildHead() {
+  const pB = $('panel-build');
   let drag = null;
-  elSplitter.addEventListener('mousedown', (e) => {
+  let dragMovedPx = 0;
+
+  elBuildHeadGrip.addEventListener('mousedown', (e) => {
     e.preventDefault();
+    e.stopPropagation();
+    if (pB.classList.contains('collapsed')) return;
     const pJ = $('panel-journal');
-    const pB = $('panel-build');
     drag = {
       startY: e.clientY,
       hJ: pJ.getBoundingClientRect().height,
       hB: pB.getBoundingClientRect().height,
       maxB: buildPanelNaturalHeight(),
     };
+    dragMovedPx = 0;
   });
   window.addEventListener('mousemove', (e) => {
     if (!drag) return;
     const dy = e.clientY - drag.startY;
+    dragMovedPx = Math.max(dragMovedPx, Math.abs(dy));
     const total = drag.hJ + drag.hB;
-    let nB = Math.max(80, Math.min(drag.maxB, drag.hB - dy));
-    let nJ = total - nB;
-    const pB = $('panel-build');
+    const nB = Math.max(80, Math.min(drag.maxB, drag.hB - dy));
+    const nJ = total - nB;
     pB.dataset.userSized = '1';
     $('panel-journal').style.flex = `${nJ} 0 0px`;
     pB.style.flex = `0 0 ${nB}px`;
   });
   window.addEventListener('mouseup', () => { drag = null; });
+
+  elBuildHead.addEventListener('click', (e) => {
+    // Ignore clicks that originated from the grip drag (if the user dragged
+    // the grip a tiny bit, we don't want to toggle).
+    if (e.target === elBuildHeadGrip || elBuildHeadGrip.contains(e.target)) {
+      if (dragMovedPx > 3) { dragMovedPx = 0; return; }
+    }
+    pB.classList.toggle('collapsed');
+  });
 })();
 
 // ═══════════════════════════════════════════════════════════════
