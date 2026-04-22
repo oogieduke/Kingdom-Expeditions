@@ -71,7 +71,7 @@ html, body { margin: 0; padding: 0; height: 100%; background: #1A0F08; color: va
 }
 .tb-center { display: flex; align-items: center; gap: 14px; justify-content: center; }
 .tb-left { justify-self: start; }
-.tb-right { justify-self: end; }
+.tb-right { justify-self: end; display: flex; align-items: center; gap: 10px; }
 
 .res-group { display: flex; gap: 6px; }
 .pop-group { display: flex; gap: 6px; padding-left: 12px; border-left: 1px solid rgba(107,68,35,0.25); }
@@ -152,7 +152,7 @@ html, body { margin: 0; padding: 0; height: 100%; background: #1A0F08; color: va
 .map-grid.hidden { display: none; }
 
 /* Settings menu (top-right) */
-.settings-wrap { position: relative; margin-left: 8px; }
+.settings-wrap { position: relative; }
 .settings-btn {
   width: 40px; height: 40px;
   display: flex; align-items: center; justify-content: center;
@@ -163,8 +163,9 @@ html, body { margin: 0; padding: 0; height: 100%; background: #1A0F08; color: va
 }
 .settings-btn:hover { background: rgba(228,195,116,0.6); transform: translateY(-1px); }
 .settings-btn.open { background: rgba(201,166,73,0.5); }
-.settings-btn.open svg { transform: rotate(60deg); }
-.settings-btn svg { transition: transform 250ms ease; }
+.settings-icon { width: 24px; height: 24px; object-fit: contain; image-rendering: pixelated; transition: transform 250ms ease; }
+.settings-btn:hover .settings-icon { transform: rotate(35deg); }
+.settings-btn.open .settings-icon { transform: rotate(60deg); }
 .settings-menu {
   position: absolute; top: calc(100% + 8px); right: 0;
   width: 280px;
