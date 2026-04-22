@@ -1678,7 +1678,7 @@ function renderBuildPanel() {
     const placing = state.placingBuilding === b.id;
     const costHtml = Object.entries(b.cost).map(([k, v]) => {
       const ok = state.resources[k] >= v;
-      return `<span class="bc ${ok ? 'ok' : 'no'}"><img src="${RES[k].icon}">${v}</span>`;
+      return `<span class="bc ${ok ? 'ok' : 'no'}"><img src="${RES[k].icon}" width="16" height="16">${v}</span>`;
     }).join('');
     return `
       <div class="build-item ${afford ? '' : 'cant'}" title="${b.name} — ${b.effect}">
@@ -1709,13 +1709,19 @@ function buildPanelNaturalHeight() {
 function adjustBuildPanelHeight() {
   const pB = $('panel-build');
   if (!pB) return;
-  // Only measure+apply the default once (user can still drag to resize via splitter)
-  if (pB.dataset.initialized) return;
-  requestAnimationFrame(() => {
+  // Skip if the user has manually resized via the grip — their size wins.
+  if (pB.dataset.userSized) return;
+  const apply = () => {
+    if (pB.dataset.userSized) return;
     const natural = buildPanelNaturalHeight();
     pB.style.flex = `0 0 ${natural}px`;
     $('panel-journal').style.flex = '1 1 0';
-    pB.dataset.initialized = '1';
+  };
+  apply();
+  // Re-apply once cost icons finish loading — scrollHeight is undersized
+  // before images report their intrinsic size.
+  pB.querySelectorAll('img').forEach(img => {
+    if (!img.complete) img.addEventListener('load', apply, { once: true });
   });
 }
 
@@ -2127,18 +2133,10 @@ function zoomInterp() {
 elMapScroller.addEventListener('wheel', (e) => {
   e.preventDefault();
   const rect = elMapScroller.getBoundingClientRect();
-  let sx, sy, wx, wy;
-  if (state.settings.zoomFollowsCursor) {
-    sx = e.clientX - rect.left;
-    sy = e.clientY - rect.top;
-    wx = (elMapScroller.scrollLeft + sx) / zoom;
-    wy = (elMapScroller.scrollTop + sy) / zoom;
-  } else {
-    sx = elMapScroller.clientWidth / 2;
-    sy = elMapScroller.clientHeight / 2;
-    wx = (elMapScroller.scrollLeft + sx) / zoom;
-    wy = (elMapScroller.scrollTop + sy) / zoom;
-  }
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  const wx = (elMapScroller.scrollLeft + sx) / zoom;
+  const wy = (elMapScroller.scrollTop + sy) / zoom;
   zoomAnchor = { wx, wy, sx, sy };
   const factor = Math.pow(1.0015, -e.deltaY);
   targetZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, targetZoom * factor));
@@ -2149,16 +2147,22 @@ elMapScroller.addEventListener('wheel', (e) => {
 // cursor and targeting the main viewport's center.
 elMinimapWrap.addEventListener('wheel', (e) => {
   e.preventDefault();
-  const wrapRect = elMinimapWrap.getBoundingClientRect();
-  const mx = e.clientX - wrapRect.left;
-  const my = e.clientY - wrapRect.top;
-  // Minimap → world pixels (world size in px = MAP_SIZE * TILE, displayed in wrapRect)
-  const worldPx = MAP_SIZE * TILE;
-  const wx = (mx / wrapRect.width) * worldPx;
-  const wy = (my / wrapRect.height) * worldPx;
-  // Keep (wx, wy) at the center of the main viewport
   const sx = elMapScroller.clientWidth / 2;
   const sy = elMapScroller.clientHeight / 2;
+  let wx, wy;
+  if (state.settings.zoomFollowsCursor) {
+    // Anchor at the world point under the cursor (on the minimap)
+    const wrapRect = elMinimapWrap.getBoundingClientRect();
+    const mx = e.clientX - wrapRect.left;
+    const my = e.clientY - wrapRect.top;
+    const worldPx = MAP_SIZE * TILE;
+    wx = (mx / wrapRect.width) * worldPx;
+    wy = (my / wrapRect.height) * worldPx;
+  } else {
+    // Keep the current main viewport center in place
+    wx = (elMapScroller.scrollLeft + sx) / zoom;
+    wy = (elMapScroller.scrollTop + sy) / zoom;
+  }
   zoomAnchor = { wx, wy, sx, sy };
   const factor = Math.pow(1.0015, -e.deltaY);
   targetZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, targetZoom * factor));
