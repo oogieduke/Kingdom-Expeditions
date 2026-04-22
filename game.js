@@ -121,6 +121,10 @@ const state = {
   // UI
   mouseMode: 'default',   // 'default' = L:pan/R:select  ·  'swapped' = L:select/R:pan
   panelOpen: false,       // true when expedition panel in sidebar
+  settings: {
+    deselectOutside: true,  // single click outside committed zone deselects it
+    showGrid: true,
+  },
 };
 
 // PAN state (not in serializable state)
@@ -266,7 +270,11 @@ const elMinimapWrap = $('minimap-wrap');
 const elZoneInfo = $('zone-info');
 const elSbTopTitle = $('sb-top-title');
 const elSbTopSub = $('sb-top-sub');
-const elMouseToggle = $('mouse-toggle');
+const elSettingsBtn = $('settings-btn');
+const elSettingsMenu = $('settings-menu');
+const elOptDeselect = $('opt-deselect-outside');
+const elOptMouseSwap = $('opt-mouse-swap');
+const elOptShowGrid = $('opt-show-grid');
 const elMapHint = $('map-hint');
 const elSplitter = $('sb-splitter');
 
@@ -525,6 +533,8 @@ function pointInRect(x, y, r) {
 }
 
 let dragStart = null;
+let pendingReselect = null; // { clientX, clientY, cell } — click outside committed sel, waiting to see if drag or click
+const RESELECT_DRAG_PX = 5;
 
 elMapScroller.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -552,10 +562,11 @@ elMapScroller.addEventListener('mousedown', (e) => {
     e.preventDefault();
     const c = cellFromEvent(e);
 
-    // If a committed selection exists, click-outside cancels (don't re-select).
+    // If a committed selection exists, click outside defers: single click cancels
+    // (if the setting allows), drag past threshold starts a new zone.
     if (state.commitedSelection) {
       if (!pointInRect(c.x, c.y, state.commitedSelection)) {
-        closeExpeditionPanel();
+        pendingReselect = { clientX: e.clientX, clientY: e.clientY, cell: c };
       }
       return;
     }
@@ -579,6 +590,23 @@ window.addEventListener('mousemove', (e) => {
     updateMinimapViewport();
     return;
   }
+  if (pendingReselect) {
+    const dx = e.clientX - pendingReselect.clientX;
+    const dy = e.clientY - pendingReselect.clientY;
+    if (Math.hypot(dx, dy) >= RESELECT_DRAG_PX) {
+      // Promote to a new selection drag: drop the old committed zone.
+      const start = pendingReselect.cell;
+      pendingReselect = null;
+      closeExpeditionPanel();
+      dragStart = start;
+      state.selection = { x1: start.x, y1: start.y, x2: start.x, y2: start.y };
+      state.dragging = true;
+      elMapScroller.classList.add('selecting');
+      renderSelection();
+      renderZoneInfo();
+    }
+    return;
+  }
   if (state.dragging && dragStart) {
     const c = cellFromEvent(e);
     state.selection.x2 = c.x; state.selection.y2 = c.y;
@@ -591,6 +619,12 @@ window.addEventListener('mouseup', (e) => {
   if (pan) {
     pan = null;
     elMapScroller.classList.remove('panning');
+    return;
+  }
+  if (pendingReselect) {
+    // Click outside committed zone without drag: deselect only if setting allows.
+    pendingReselect = null;
+    if (state.settings.deselectOutside) closeExpeditionPanel();
     return;
   }
   if (!state.dragging) return;
@@ -1926,28 +1960,58 @@ function renderZoneInfo() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// MOUSE-MODE TOGGLE
+// SETTINGS MENU
 // ═══════════════════════════════════════════════════════════════
 
-function renderMouseToggle() {
-  const leftLabel = state.mouseMode === 'swapped' ? 'Sélection' : 'Déplacement';
-  const rightLabel = state.mouseMode === 'swapped' ? 'Déplacement' : 'Sélection';
-  elMouseToggle.title = `Clic G: ${leftLabel} · Clic D: ${rightLabel} — cliquer pour permuter`;
-  elMouseToggle.classList.toggle('swapped', state.mouseMode === 'swapped');
-}
-
-elMouseToggle.addEventListener('mousedown', (e) => e.stopPropagation());
-elMouseToggle.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); });
-elMouseToggle.addEventListener('click', () => {
-  state.mouseMode = state.mouseMode === 'default' ? 'swapped' : 'default';
-  renderMouseToggle();
-  const msg = state.mouseMode === 'swapped'
-    ? 'Clic G = Sélection · Clic D = Déplacement'
-    : 'Clic G = Déplacement · Clic D = Sélection';
+function showMapHint(msg) {
   elMapHint.textContent = msg;
   elMapHint.classList.add('show');
   clearTimeout(elMapHint._t);
   elMapHint._t = setTimeout(() => elMapHint.classList.remove('show'), 1800);
+}
+
+function applySettingsToUI() {
+  elOptDeselect.checked = !!state.settings.deselectOutside;
+  elOptMouseSwap.checked = state.mouseMode === 'swapped';
+  elOptShowGrid.checked = !!state.settings.showGrid;
+  elMapGrid.classList.toggle('hidden', !state.settings.showGrid);
+}
+
+function toggleSettingsMenu(force) {
+  const willOpen = force !== undefined ? force : elSettingsMenu.hasAttribute('hidden');
+  if (willOpen) {
+    elSettingsMenu.removeAttribute('hidden');
+    elSettingsBtn.classList.add('open');
+  } else {
+    elSettingsMenu.setAttribute('hidden', '');
+    elSettingsBtn.classList.remove('open');
+  }
+}
+
+elSettingsBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+elSettingsBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleSettingsMenu();
+});
+elSettingsMenu.addEventListener('mousedown', (e) => e.stopPropagation());
+elSettingsMenu.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('mousedown', (e) => {
+  if (!elSettingsMenu.hasAttribute('hidden')) toggleSettingsMenu(false);
+});
+
+elOptDeselect.addEventListener('change', () => {
+  state.settings.deselectOutside = elOptDeselect.checked;
+});
+elOptMouseSwap.addEventListener('change', () => {
+  state.mouseMode = elOptMouseSwap.checked ? 'swapped' : 'default';
+  const msg = state.mouseMode === 'swapped'
+    ? 'Clic G = Sélection · Clic D = Déplacement'
+    : 'Clic G = Déplacement · Clic D = Sélection';
+  showMapHint(msg);
+});
+elOptShowGrid.addEventListener('change', () => {
+  state.settings.showGrid = elOptShowGrid.checked;
+  elMapGrid.classList.toggle('hidden', !state.settings.showGrid);
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -2039,7 +2103,7 @@ function init() {
   state.map = generateMap();
   addJournal('📜 Un nouveau règne commence. Dessinez une zone pour partir en expédition.', 'info');
   renderAll();
-  renderMouseToggle();
+  applySettingsToUI();
   applyZoom();
   centerOnCastle();
   toast('info', 'Bienvenue, Roi', 'Clic gauche pour déplacer la carte · Clic droit pour sélectionner.');
