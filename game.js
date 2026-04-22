@@ -8,10 +8,10 @@
 // ═══════════════════════════════════════════════════════════════
 
 const TILE = 44;
-const MAP_SIZE = 80;
-const CASTLE = { x: 39, y: 39 };          // top-left of 3x3 castle
-const CASTLE_CENTER = { x: 40, y: 40 };   // center cell of castle
-const INFLUENCE_RADIUS = 7;               // cells
+const MAP_SIZE = 100;
+const CASTLE = { x: 49, y: 49 };          // top-left of 3x3 castle
+const CASTLE_CENTER = { x: 50, y: 50 };   // center cell of castle
+const INFLUENCE_RADIUS = 8;               // cells
 
 const CASE = {
   GRASS: 'grass', WHEAT: 'wheat', FOREST: 'forest', QUARRY: 'quarry',
@@ -107,6 +107,7 @@ const state = {
   kingAlive: true,
   monthsAt: 0,         // absolute months since start (year 1 = months 0-11)
   map: [],
+  roads: new Set(),    // 'x,y' strings — decorative path tiles
   buildings: [],       // {id, x, y}
   expedition: null,    // active expedition {cells, sendPop, fighters, routePath, ...}
   selection: null,     // {x1,y1,x2,y2} being drawn
@@ -139,66 +140,150 @@ function isCastle(x, y) { return x >= CASTLE.x && x < CASTLE.x + 3 && y >= CASTL
 // MAP GEN
 // ═══════════════════════════════════════════════════════════════
 
+// Biome kinds. Each quadrant around the castle is assigned one (random rotation per game).
+const BIOMES = {
+  plains:   { weights: { wheat: 5, forest: 1, water: 0.5, quarry: 0.2, gold: 0.1, mountain: 0 } },
+  forest:   { weights: { wheat: 1, forest: 6, water: 0.6, quarry: 0.3, gold: 0.2, mountain: 0.3 } },
+  mountain: { weights: { wheat: 0.2, forest: 0.6, water: 0.2, quarry: 4, gold: 1.2, mountain: 2 } },
+  lake:     { weights: { wheat: 1.5, forest: 1.2, water: 5, quarry: 0.2, gold: 0.1, mountain: 0.1 } },
+};
+const BIOME_TYPES_TO_CASE = {
+  wheat: CASE.WHEAT, forest: CASE.FOREST, water: CASE.WATER,
+  quarry: CASE.QUARRY, gold: CASE.GOLD, mountain: CASE.MOUNTAIN,
+};
+
+function distFromCastle(x, y) {
+  return Math.sqrt((x - CASTLE_CENTER.x) ** 2 + (y - CASTLE_CENTER.y) ** 2);
+}
+
+// For each cell, pick the quadrant biome based on angle from castle center,
+// with a noisy border so biomes don't follow perfect 90° lines.
+function buildBiomeMap(rotationOffset) {
+  const order = ['plains', 'forest', 'mountain', 'lake'];
+  // Random shuffle so each game assigns biomes to quadrants differently
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  // Cheap low-frequency noise from a few sinusoids
+  const sA = rng() * 100, sB = rng() * 100, sC = rng() * 100;
+  const noiseAt = (x, y) => (
+    Math.sin((x + sA) * 0.08) +
+    Math.sin((y + sB) * 0.09) +
+    Math.sin((x + y + sC) * 0.06)
+  ) * 0.4; // ~[-1.2, 1.2] radians worth of wobble
+
+  const grid = [];
+  for (let y = 0; y < MAP_SIZE; y++) {
+    const row = [];
+    for (let x = 0; x < MAP_SIZE; x++) {
+      const ang = Math.atan2(y - CASTLE_CENTER.y, x - CASTLE_CENTER.x) + rotationOffset + noiseAt(x, y);
+      // Normalize to [0, 2pi)
+      const a = ((ang % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+      const quad = Math.floor(a / (Math.PI / 2)); // 0..3
+      row.push(order[quad]);
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
 function generateMap() {
   const map = [];
-  // Init all grass
   for (let y = 0; y < MAP_SIZE; y++) {
     const row = [];
     for (let x = 0; x < MAP_SIZE; x++) {
       if (isCastle(x, y)) row.push({ x, y, type: CASE.CASTLE });
-      else row.push({ x, y, type: CASE.GRASS, harvested: 0, cooldown: 0 });
+      else row.push({ x, y, type: CASE.GRASS, harvested: 0, cooldown: 0, biome: 'plains' });
     }
     map.push(row);
   }
 
-  const distFromCastle = (x, y) => Math.sqrt((x - CASTLE_CENTER.x) ** 2 + (y - CASTLE_CENTER.y) ** 2);
+  // 1. Biome layout: quadrant-based, random rotation per game
+  const rotation = rng() * Math.PI * 2;
+  const biomeGrid = buildBiomeMap(rotation);
+  for (let y = 0; y < MAP_SIZE; y++)
+    for (let x = 0; x < MAP_SIZE; x++)
+      map[y][x].biome = biomeGrid[y][x];
 
-  // CLUSTERS — grown from seeds. Size scales with distance from castle:
-  //   near  = tiny patches (2-4),   far = larger groves / fields
-  // { type, count, baseMin, baseMax, farBonus, branchProb, minDistFromCastle }
-  const clusterDefs = [
-    { type: CASE.WHEAT,    count: 55, baseMin: 2, baseMax: 4, farBonus: 7, branch: 0.72, minDist: 3 },
-    { type: CASE.FOREST,   count: 65, baseMin: 2, baseMax: 4, farBonus: 8, branch: 0.75, minDist: 4 },
-    { type: CASE.QUARRY,   count: 30, baseMin: 2, baseMax: 3, farBonus: 2, branch: 0.50, minDist: 7 },
-    { type: CASE.WATER,    count: 32, baseMin: 2, baseMax: 4, farBonus: 3, branch: 0.68, minDist: 3 },
-    { type: CASE.GOLD,     count: 18, baseMin: 1, baseMax: 2, farBonus: 1, branch: 0.45, minDist: 10 },
-    { type: CASE.MOUNTAIN, count: 18, baseMin: 3, baseMax: 5, farBonus: 5, branch: 0.72, minDist: 12 },
-    { type: CASE.CORRUPTED,count: 8,  baseMin: 2, baseMax: 3, farBonus: 2, branch: 0.55, minDist: 20 },
-  ];
+  // 2. Rivers — 1-2 serpents crossing the map. Each river seeds a long water line
+  //    and optionally a few wetlands around it.
+  const riverCount = rInt(1, 2);
+  for (let i = 0; i < riverCount; i++) {
+    carveRiver(map);
+  }
 
-  // Size grows with distance: t=0 near castle → [baseMin, baseMax]; t=1 far edge → up to baseMax+farBonus
-  const sizeFor = (d, def) => {
-    const t = Math.min(1, d / (MAP_SIZE * 0.45));
-    const bonus = Math.round(def.farBonus * t * t); // quadratic so big fields are only really far
-    return rInt(def.baseMin, def.baseMax + bonus);
+  // 3. Scattered small lakes in non-lake biomes
+  for (let i = 0; i < 6; i++) {
+    for (let a = 0; a < 40; a++) {
+      const sx = rInt(4, MAP_SIZE - 5);
+      const sy = rInt(4, MAP_SIZE - 5);
+      if (isCastle(sx, sy)) continue;
+      if (map[sy][sx].type !== CASE.GRASS) continue;
+      if (distFromCastle(sx, sy) < 10) continue;
+      growBlob(map, sx, sy, rInt(4, 10), CASE.WATER, 0.72);
+      break;
+    }
+  }
+
+  // 4. Resource clusters — placed per-biome. Size scales with distance:
+  //    near castle = tiny patches (2-4), far edges = big fields/forests.
+  //    Lake biome gets its water quota filled via the lake body + rivers; we still
+  //    drop small wheat/forest pockets around the water's edge for realism.
+
+  // Distance-driven size: near=small, far=large, quadratic curve.
+  const sizeFor = (d, baseMin, baseMax, farBonus) => {
+    const t = Math.min(1, d / (MAP_SIZE * 0.5));
+    const bonus = Math.round(farBonus * t * t);
+    return rInt(baseMin, baseMax + bonus);
   };
 
-  for (const def of clusterDefs) {
-    for (let i = 0; i < def.count; i++) {
-      for (let a = 0; a < 60; a++) {
+  // For each resource kind, derive a size profile + how many clusters we want in total.
+  // Then we use biome weights to decide where each cluster lands.
+  const resourceProfiles = [
+    { res: 'wheat',    baseMin: 2, baseMax: 4, farBonus: 9,  branch: 0.72, count: 110 },
+    { res: 'forest',   baseMin: 2, baseMax: 4, farBonus: 11, branch: 0.75, count: 130 },
+    { res: 'quarry',   baseMin: 2, baseMax: 4, farBonus: 5,  branch: 0.55, count: 55 },
+    { res: 'water',    baseMin: 2, baseMax: 4, farBonus: 4,  branch: 0.70, count: 35 },
+    { res: 'gold',     baseMin: 1, baseMax: 2, farBonus: 2,  branch: 0.45, count: 28 },
+    { res: 'mountain', baseMin: 3, baseMax: 5, farBonus: 6,  branch: 0.72, count: 30 },
+  ];
+
+  for (const profile of resourceProfiles) {
+    for (let i = 0; i < profile.count; i++) {
+      for (let attempt = 0; attempt < 70; attempt++) {
         const sx = rInt(1, MAP_SIZE - 2);
         const sy = rInt(1, MAP_SIZE - 2);
         if (isCastle(sx, sy)) continue;
         if (map[sy][sx].type !== CASE.GRASS) continue;
         const d = distFromCastle(sx, sy);
-        if (d < def.minDist) continue;
-        // Softer rejection so the map fills more uniformly
-        const farBias = Math.min(1, d / (MAP_SIZE * 0.5));
-        if (rng() > 0.55 + farBias * 0.4) continue;
-        growBlob(map, sx, sy, sizeFor(d, def), def.type, def.branch);
+        if (d < 4) continue; // reserve innermost area for safe zone
+        const biome = map[sy][sx].biome;
+        const weight = BIOMES[biome].weights[profile.res] || 0;
+        if (weight <= 0) continue;
+        // Accept probability proportional to biome weight.
+        // Base 0.25 + biome-weighted push ensures off-biome resources still exist sparsely.
+        const acceptProb = Math.min(0.98, 0.15 + weight * 0.18);
+        if (rng() > acceptProb) continue;
+        const size = sizeFor(d, profile.baseMin, profile.baseMax, profile.farBonus);
+        growBlob(map, sx, sy, size, BIOME_TYPES_TO_CASE[profile.res], profile.branch);
         break;
       }
     }
   }
 
-  // SINGLE POINTS — monsters, ruins (never touching each other)
+  // 5. Safe zone around castle (radius 8). Override with small mixed clusters of
+  //    wheat / water / forest so the player has something to gather immediately.
+  seedSafeZone(map);
+
+  // 6. Monsters + ruins (single tiles, far from castle)
   const pointDefs = [
-    { type: CASE.MONSTER, count: 32, minDist: 10 },
-    { type: CASE.RUINS,   count: 16, minDist: 12 },
+    { type: CASE.MONSTER, count: 48, minDist: 14 },
+    { type: CASE.RUINS,   count: 22, minDist: 18 },
   ];
   for (const def of pointDefs) {
     for (let i = 0; i < def.count; i++) {
-      for (let a = 0; a < 50; a++) {
+      for (let a = 0; a < 60; a++) {
         const sx = rInt(0, MAP_SIZE - 1);
         const sy = rInt(0, MAP_SIZE - 1);
         if (isCastle(sx, sy)) continue;
@@ -210,7 +295,129 @@ function generateMap() {
     }
   }
 
+  // 7. Decorative paths from castle to a few distant points — render-layer only.
+  state.roads = generatePaths(map);
+
   return map;
+}
+
+// Seed the castle surroundings with small mixed clusters so early game is gatherable.
+function seedSafeZone(map) {
+  const mixes = [
+    { type: CASE.WHEAT,  count: 3, size: [2, 3] },
+    { type: CASE.WATER,  count: 2, size: [2, 2] },
+    { type: CASE.FOREST, count: 3, size: [2, 3] },
+  ];
+  for (const m of mixes) {
+    for (let i = 0; i < m.count; i++) {
+      for (let a = 0; a < 40; a++) {
+        const ang = rng() * Math.PI * 2;
+        const r = 3 + rng() * 5;
+        const sx = Math.round(CASTLE_CENTER.x + Math.cos(ang) * r);
+        const sy = Math.round(CASTLE_CENTER.y + Math.sin(ang) * r);
+        if (sx < 1 || sx >= MAP_SIZE - 1 || sy < 1 || sy >= MAP_SIZE - 1) continue;
+        if (isCastle(sx, sy)) continue;
+        if (map[sy][sx].type !== CASE.GRASS) continue;
+        growBlob(map, sx, sy, rInt(m.size[0], m.size[1]), m.type, 0.6);
+        break;
+      }
+    }
+  }
+}
+
+// Trace a serpentine river across the map. Picks two opposite-ish edge points and
+// walks between them with heading noise. Writes water tiles of width 1 (with
+// occasional bulges to width 2).
+function carveRiver(map) {
+  // Pick a source edge and a target edge (not the same, prefer opposite sides)
+  const edges = ['top', 'bottom', 'left', 'right'];
+  const srcEdge = edges[Math.floor(rng() * 4)];
+  const opposite = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' }[srcEdge];
+  const tgtEdge = rng() < 0.8 ? opposite : edges.filter(e => e !== srcEdge)[Math.floor(rng() * 3)];
+
+  const pointOn = (edge) => {
+    const t = 0.15 + rng() * 0.7; // avoid corners
+    const k = Math.round(t * (MAP_SIZE - 1));
+    if (edge === 'top')    return { x: k, y: 0 };
+    if (edge === 'bottom') return { x: k, y: MAP_SIZE - 1 };
+    if (edge === 'left')   return { x: 0, y: k };
+    return { x: MAP_SIZE - 1, y: k };
+  };
+  const src = pointOn(srcEdge);
+  const tgt = pointOn(tgtEdge);
+
+  let x = src.x, y = src.y;
+  // Heading in radians, initialized roughly toward target
+  let heading = Math.atan2(tgt.y - src.y, tgt.x - src.x);
+  const maxSteps = MAP_SIZE * 3;
+  for (let step = 0; step < maxSteps; step++) {
+    // Drift heading slightly toward target, with noise
+    const want = Math.atan2(tgt.y - y, tgt.x - x);
+    let diff = ((want - heading + Math.PI) % (Math.PI * 2)) - Math.PI;
+    heading += diff * 0.06 + (rng() - 0.5) * 0.5;
+
+    x += Math.cos(heading);
+    y += Math.sin(heading);
+    const ix = Math.round(x), iy = Math.round(y);
+    if (ix < 0 || ix >= MAP_SIZE || iy < 0 || iy >= MAP_SIZE) break;
+    if (isCastle(ix, iy)) {
+      // deflect around castle
+      heading += Math.PI / 2 * (rng() < 0.5 ? 1 : -1);
+      continue;
+    }
+    if (map[iy][ix].type === CASE.GRASS) map[iy][ix].type = CASE.WATER;
+    // Occasional bulge
+    if (rng() < 0.25) {
+      const bx = ix + (rng() < 0.5 ? -1 : 1);
+      const by = iy + (rng() < 0.5 ? -1 : 1);
+      if (bx >= 0 && bx < MAP_SIZE && by >= 0 && by < MAP_SIZE
+          && !isCastle(bx, by) && map[by][bx].type === CASE.GRASS) {
+        map[by][bx].type = CASE.WATER;
+      }
+    }
+
+    // Stop when we're close enough to the target edge
+    if (
+      (tgtEdge === 'top' && iy <= 1) ||
+      (tgtEdge === 'bottom' && iy >= MAP_SIZE - 2) ||
+      (tgtEdge === 'left' && ix <= 1) ||
+      (tgtEdge === 'right' && ix >= MAP_SIZE - 2)
+    ) break;
+  }
+}
+
+// Decorative paths — from castle outward to a handful of distant points.
+// Returns a Set of 'x,y' strings. Paths avoid water and mountain tiles visually
+// (they route "around" them by skipping those tiles — slight gap, no gameplay effect).
+function generatePaths(map) {
+  const roads = new Set();
+  const pathCount = rInt(3, 4);
+  for (let i = 0; i < pathCount; i++) {
+    const ang = rng() * Math.PI * 2;
+    const dist = 22 + rng() * (MAP_SIZE * 0.35);
+    const tx = Math.round(CASTLE_CENTER.x + Math.cos(ang) * dist);
+    const ty = Math.round(CASTLE_CENTER.y + Math.sin(ang) * dist);
+    if (tx < 2 || tx >= MAP_SIZE - 2 || ty < 2 || ty >= MAP_SIZE - 2) continue;
+    // Noisy straight line from castle edge to target
+    let x = CASTLE_CENTER.x, y = CASTLE_CENTER.y;
+    let heading = Math.atan2(ty - y, tx - x);
+    const steps = Math.round(Math.hypot(tx - x, ty - y));
+    for (let s = 0; s < steps * 1.2; s++) {
+      const want = Math.atan2(ty - y, tx - x);
+      let diff = ((want - heading + Math.PI) % (Math.PI * 2)) - Math.PI;
+      heading += diff * 0.2 + (rng() - 0.5) * 0.35;
+      x += Math.cos(heading);
+      y += Math.sin(heading);
+      const ix = Math.round(x), iy = Math.round(y);
+      if (ix < 0 || ix >= MAP_SIZE || iy < 0 || iy >= MAP_SIZE) break;
+      if (isCastle(ix, iy)) continue;
+      const t = map[iy][ix].type;
+      if (t === CASE.WATER || t === CASE.MOUNTAIN) continue; // route skips these
+      roads.add(ix + ',' + iy);
+      if (ix === tx && iy === ty) break;
+    }
+  }
+  return roads;
 }
 
 function growBlob(map, sx, sy, targetSize, type, branchProb) {
@@ -348,6 +555,39 @@ function renderMap() {
   applyZoom();
 
   elMapLayers.innerHTML = '';
+
+  // Biome tint + paths drawn onto a single low-res canvas (1px per tile, scaled up).
+  // Way cheaper than 10k divs.
+  const biomeCanvas = document.createElement('canvas');
+  biomeCanvas.className = 'biome-canvas';
+  biomeCanvas.width = MAP_SIZE;
+  biomeCanvas.height = MAP_SIZE;
+  biomeCanvas.style.width = (MAP_SIZE * TILE) + 'px';
+  biomeCanvas.style.height = (MAP_SIZE * TILE) + 'px';
+  const bctx = biomeCanvas.getContext('2d');
+  const BIOME_COLORS = {
+    plains:   'rgba(172,198,120,0.35)',
+    forest:   'rgba(86,135,85,0.38)',
+    mountain: 'rgba(165,150,130,0.38)',
+    lake:     'rgba(120,175,205,0.35)',
+  };
+  for (let y = 0; y < MAP_SIZE; y++) {
+    for (let x = 0; x < MAP_SIZE; x++) {
+      const c = state.map[y][x];
+      if (!c.biome) continue;
+      bctx.fillStyle = BIOME_COLORS[c.biome] || 'transparent';
+      bctx.fillRect(x, y, 1, 1);
+    }
+  }
+  // Paths on top of biome tint
+  if (state.roads) {
+    bctx.fillStyle = 'rgba(139,106,66,0.75)';
+    for (const key of state.roads) {
+      const [rx, ry] = key.split(',').map(Number);
+      bctx.fillRect(rx, ry, 1, 1);
+    }
+  }
+  elMapLayers.appendChild(biomeCanvas);
 
   // Influence halo
   const halo = document.createElement('div');

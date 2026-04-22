@@ -151,6 +151,16 @@ html, body { margin: 0; padding: 0; height: 100%; background: #1A0F08; color: va
 .map-grid { position: absolute; left: 0; top: 0; background-image: linear-gradient(rgba(107,68,35,0.10) 1px, transparent 1px), linear-gradient(90deg, rgba(107,68,35,0.10) 1px, transparent 1px); }
 .map-grid.hidden { display: none; }
 
+/* Biome tint + paths drawn on a low-res canvas, scaled up with bilinear filtering
+   for smooth transitions between biomes. */
+.biome-canvas {
+  position: absolute; left: 0; top: 0;
+  pointer-events: none;
+  z-index: 0;
+  image-rendering: auto;
+  filter: blur(2px);
+}
+
 /* Settings menu (top-right) */
 .settings-wrap { position: relative; }
 .settings-btn {
