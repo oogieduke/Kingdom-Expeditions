@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=5">
+<link rel="stylesheet" href="styles.css?v=14">
 </head>
 <body>
 <div id="app" class="app">
@@ -64,18 +64,11 @@
         <div class="tb-center">
           <div class="res-group" id="res-group"></div>
           <div class="pop-group">
-            <div class="pop-slot" id="pop-civ-slot" title="Civils (habitants)">
-              <div class="pop-icon-wrap">👷</div>
+            <div class="pop-slot" id="pop-total-slot" title="Population totale (civils + soldats)">
+              <div class="pop-icon-wrap">👥</div>
               <div class="res-value-wrap">
-                <span class="res-value" id="pop-civ-value">5</span>
-                <span class="res-delta">Civils</span>
-              </div>
-            </div>
-            <div class="pop-slot" id="pop-sol-slot" title="Soldats">
-              <div class="pop-icon-wrap">🛡️</div>
-              <div class="res-value-wrap">
-                <span class="res-value" id="pop-sol-value">0</span>
-                <span class="res-delta">Soldats</span>
+                <span class="res-value" id="pop-total-value">5</span>
+                <span class="res-delta" id="pop-total-cap">/ 5</span>
               </div>
             </div>
           </div>
@@ -89,6 +82,16 @@
             </div>
           </div>
           <div class="settings-wrap">
+            <button class="settings-btn debug-btn" id="debug-btn" title="Debug" aria-label="Debug">🛠️</button>
+            <div class="debug-panel" id="debug-panel" hidden>
+              <div class="settings-title">Debug — coûts d'expédition</div>
+              <div class="debug-rows" id="debug-rows"></div>
+              <button class="debug-add" id="debug-add">＋ Ajouter une ligne</button>
+              <div class="debug-footer">
+                <button class="debug-reset" id="debug-reset">Reset défauts</button>
+                <button class="debug-close" id="debug-close">Fermer</button>
+              </div>
+            </div>
             <button class="settings-btn" id="settings-btn" title="Options" aria-label="Options">
               <img src="assets/icons/parameters.png?v=3" alt="" class="settings-icon" width="24" height="24">
             </button>
@@ -110,6 +113,10 @@
                 <span class="settings-label">Zoom minimap centré sur le curseur</span>
                 <input type="checkbox" id="opt-zoom-cursor" class="settings-check">
               </label>
+              <label class="settings-row">
+                <span class="settings-label">Molette change la population (panneau d'expédition)</span>
+                <input type="checkbox" id="opt-wheel-pop" class="settings-check">
+              </label>
             </div>
           </div>
         </div>
@@ -129,6 +136,70 @@
         <!-- Hint overlay -->
         <div class="map-hint" id="map-hint"></div>
       </div>
+
+      <!-- SIDEBAR (RIGHT) — Cour Royale. Sits inside .stage so topbar & timeline span the full main-col width. -->
+      <aside class="sidebar-right" id="sidebar-right">
+        <div class="sb-r-head">
+          <span class="sb-r-title">👑 Cour Royale</span>
+          <button class="sb-r-collapse" id="sb-r-collapse" title="Replier la cour" aria-label="Replier la cour">›</button>
+        </div>
+
+        <div class="sb-r-body" id="sb-r-body">
+          <!-- CONSEIL (grille) -->
+          <div class="panel panel-conseil" id="panel-conseil">
+            <div class="panel-head conseil-head">
+              <span class="conseil-head-title">⚜ Le Conseil</span>
+              <span class="conseil-head-hint" id="conseil-head-hint">Unités actives</span>
+            </div>
+            <div class="conseil-grid-wrap">
+              <div class="conseil-grid" id="conseil-grid"></div>
+            </div>
+          </div>
+
+          <!-- COUR (banc) -->
+          <div class="panel panel-cour" id="panel-cour">
+            <div class="panel-head cour-head">
+              <span class="cour-head-title">⚘ La Cour</span>
+              <span class="cour-head-hint" id="cour-head-hint">Soutien · 20%</span>
+            </div>
+            <div class="cour-bench-wrap">
+              <div class="cour-bench" id="cour-bench"></div>
+            </div>
+          </div>
+
+          <!-- PEUPLE (village vivant) -->
+          <div class="panel panel-peuple" id="panel-peuple">
+            <div class="panel-head peuple-head">
+              <span class="peuple-head-title">🌾 Le Peuple</span>
+              <span class="peuple-head-hint" id="peuple-head-hint">Village &amp; logements</span>
+            </div>
+            <div class="peuple-scene-wrap">
+              <div class="peuple-scene" id="peuple-scene">
+                <div class="peuple-sky"></div>
+                <div class="peuple-hills"></div>
+                <div class="peuple-houses" id="peuple-houses"></div>
+                <div class="peuple-sprites" id="peuple-sprites"></div>
+              </div>
+              <div class="peuple-counts">
+                <div class="peuple-count" id="peuple-count-civ" title="Civils logés">
+                  <span class="pc-icon">👤</span>
+                  <span class="pc-text"><span id="peuple-civ-cur">0</span><span class="pc-sep">/</span><span id="peuple-civ-cap">0</span> civils</span>
+                </div>
+                <div class="peuple-count" id="peuple-count-sol" title="Soldats logés">
+                  <span class="pc-icon">🛡️</span>
+                  <span class="pc-text"><span id="peuple-sol-cur">0</span><span class="pc-sep">/</span><span id="peuple-sol-cap">0</span> soldats</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Collapsed-state handle (shown when sidebar is folded) -->
+        <button class="sb-r-reopen" id="sb-r-reopen" title="Ouvrir la cour" aria-label="Ouvrir la cour" hidden>
+          <span class="sb-r-reopen-ico">👑</span>
+          <span class="sb-r-reopen-lbl">COUR</span>
+        </button>
+      </aside>
     </div>
 
     <!-- TIMELINE -->
@@ -148,11 +219,17 @@
 
   </div>
 
+  <!-- Floating unit tooltip -->
+  <div class="unit-tooltip" id="unit-tooltip" hidden></div>
+
   <!-- Season ceremony modal -->
   <div class="ceremony-backdrop" id="ceremony-backdrop" hidden></div>
 
   <!-- Game over modal -->
   <div class="gameover-backdrop" id="gameover-backdrop" hidden></div>
+
+  <!-- Court offer modal -->
+  <div class="court-offer-backdrop" id="court-offer-backdrop" hidden></div>
 
   <!-- Toast container -->
   <div class="toast-wrap" id="toast-wrap"></div>
@@ -161,6 +238,6 @@
   <div class="flight-layer" id="flight-layer"></div>
 </div>
 
-<script src="game.js?v=6"></script>
+<script src="game.js?v=17"></script>
 </body>
 </html>
