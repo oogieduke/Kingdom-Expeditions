@@ -53,18 +53,18 @@ const SEASONS = [
 // `civSlots` and `solSlots` add to the population caps managed by Le Peuple.
 // Habitation buildings (Maison / Caserne) are the only way to grow population.
 const BUILDINGS = [
-  { id: 'house',   name: 'Maison',   glyph: '🏠', cost: { wood: 5, stone: 3 }, effect: '+3 logements civils', prod: {},      pool: null,         civSlots: 3 },
+  { id: 'house',   name: 'Maison',   glyph: '🏠', cost: { wood: 5, stone: 3 }, effect: '+3 logements · +1 civil', prod: {}, pool: null,         civSlots: 3 },
   { id: 'farm',    name: 'Ferme',    glyph: '🌾', cost: { wood: 3, stone: 1 }, effect: '+2 blé/mois',   prod: { wheat: 2 }, pool: 'intendance' },
   { id: 'mill',    name: 'Scierie',  glyph: '🪵', cost: { wood: 2, stone: 2 }, effect: '+1 bois/mois',  prod: { wood: 1 },  pool: 'exploration' },
-  { id: 'barracks',name: 'Caserne',  glyph: '⚔️', cost: { wood: 5, stone: 3 }, effect: '+1 logement soldat', prod: {},      pool: 'militaire',  solSlots: 1 },
+  { id: 'barracks',name: 'Caserne',  glyph: '⚔️', cost: { wood: 5, stone: 3 }, effect: '+3 logements · +1 soldat', prod: {}, pool: 'militaire', solSlots: 3 },
   { id: 'granary', name: 'Grenier',  glyph: '🏛️', cost: { wood: 4, stone: 4 }, effect: '-25% coût nour.', prod: {},         pool: 'intendance' },
   { id: 'well',    name: 'Puits',    glyph: '🪣', cost: { stone: 5 },          effect: '+1 eau/mois',   prod: { water: 1 }, pool: null },
 ];
 
-// Le Peuple — castle has no inherent housing in v3.1: the starter "Mère du
-// Roi" (founder unit) provides +3 civSlots passively. Anonymous capacity grows
-// only through habitation buildings (Maison, Caserne).
-const CASTLE_CIV_SLOTS = 0;
+// Le Peuple — castle has an inherent household of 4 civilians (the king's
+// servants). Additional capacity comes from Maison/Caserne. Conseil/Cour
+// members are tracked separately and do NOT count toward the population.
+const CASTLE_CIV_SLOTS = 4;
 const CASTLE_SOL_SLOTS = 0;
 
 const KING_STATES = [
@@ -101,16 +101,19 @@ const DEFAULT_COST_RULES = [
 ];
 const COST_RULES_STORAGE_KEY = 'ke_debug_cost_rules';
 
-const EXPEDITION_EVENTS = [
-  { id: 'oasis',     msg: '☀️ Oasis découverte (+2 💧)',      gain: { water: 2 } },
-  { id: 'coffer',    msg: '💰 Coffre abandonné (+4 or)',      gain: { gold: 4 } },
-  { id: 'ambush',    msg: '🐺 Embuscade ! −1 unité',          loseUnits: 1 },
-  { id: 'sickness',  msg: '🤒 Maladie (−1 unité, −1 nour.)',  loseUnits: 1, loss: { wheat: 1 } },
-  { id: 'wild',      msg: '🌾 Champ sauvage (+2 nour.)',      gain: { wheat: 2 } },
-  { id: 'roar',      msg: '🐉 Rugissement lointain… (+1 stress)', stress: 1 },
-  { id: 'desert',    msg: '👥 Un déserteur s\'enfuit',        loseUnits: 1 },
-  { id: 'relic',     msg: '🏺 Relique antique (+3 or)',       gain: { gold: 3 } },
+// Expedition events fire at most once per trip, keyed to the markers
+// detected along the planned route (red ! = threat, green ! = boon).
+const EXP_THREAT_EVENTS = [
+  { id: 'ambush', msg: '🐺 Embuscade ! (−1 unité)', loseUnits: 1 },
 ];
+const EXP_BOON_EVENTS = [
+  { id: 'treasure', msg: '🏺 Trésor caché (+5 or)', gain: { gold: 5 } },
+];
+// Base chance that a detected marker actually triggers an event on launch.
+// Future modifiers can scale this up/down per side.
+const EXP_EVENT_TRIGGER_CHANCE = 0.7;
+// Distance (in cells) for a map cell to count as "near the route".
+const EXP_MARKER_RANGE = 3;
 
 // ═══════════════════════════════════════════════════════════════
 // RNG (deterministic by seed)
@@ -136,11 +139,9 @@ function rPick(arr) { return arr[Math.floor(rng() * arr.length)]; }
 
 const state = {
   resources: { wheat: 10, water: 8, gold: 5, wood: 8, stone: 5 },
-  // Anonymous population only (Le Peuple). Specials in Conseil/Cour and the
-  // Mother's protected pop are counted separately. Game starts at 0 anonymous
-  // — the kingdom relies on the Mère du Roi's +3 protected pop until the
-  // player builds Maisons and welcomes encounters.
-  population: 0,
+  // Population = anonymous inhabitants only (Le Peuple). Specials in
+  // Conseil/Cour are tracked separately and do not count here.
+  population: 4,
   soldiers: 0,
   generals: 0,
   kingAge: 25,
@@ -183,10 +184,8 @@ const state = {
     collapsed: false,
     nextUid: 1,
     starterGranted: false,
-    pity: {},            // [v2 legacy — unused in v3 encounter system]
-    refusedUnits: {},    // [v2 legacy — unused in v3 encounter system]
-    motherAlive: true,         // founder unit — disappears only on natural death
-    motherDeathAge: 0,         // king age at which she passes away (rolled at init)
+    pity: {},            // [v2 legacy — unused in encounter system]
+    refusedUnits: {},    // [v2 legacy — unused in encounter system]
     offerOpen: false,    // true while the expedition report screen is up
     pendingCeremony: false,
   },
@@ -680,50 +679,13 @@ function solCount() { return state.soldiers + state.generals; }
 function civSlotsFree() { return Math.max(0, civSlotsCap() - civCount()); }
 function solSlotsFree() { return Math.max(0, solSlotsCap() - solCount()); }
 
-// Protected raw population from court effects (e.g. Mère du Roi). These pop
-// can be deployed in expeditions but never die. Counted in season costs.
-function protectedCivPop() {
-  const eff = (typeof courtEffects === 'function') ? courtEffects() : null;
-  return eff ? (eff.protectedCivPop || 0) : 0;
-}
-
-// Special-unit counts (across Conseil + Cour). Used for unified pop totals.
-function courtSpecialsCivCount() {
-  let n = 0;
-  for (const u of state.court.conseil) {
-    const d = u && courtUnitDef(u);
-    if (d && d.archetype !== 'soldier') n++;
-  }
-  for (const u of state.court.cour) {
-    const d = u && courtUnitDef(u);
-    if (d && d.archetype !== 'soldier') n++;
-  }
-  return n;
-}
-function courtSpecialsSolCount() {
-  let n = 0;
-  for (const u of state.court.conseil) {
-    const d = u && courtUnitDef(u);
-    if (d && d.archetype === 'soldier') n++;
-  }
-  for (const u of state.court.cour) {
-    const d = u && courtUnitDef(u);
-    if (d && d.archetype === 'soldier') n++;
-  }
-  return n;
-}
-// Civilians: anonymous in Peuple + specials with non-soldier archetype + protected pop.
-function kingdomCivTotal() { return civCount() + courtSpecialsCivCount() + protectedCivPop(); }
-function kingdomSolTotal() { return solCount() + courtSpecialsSolCount(); }
+// v4: Conseil/Cour are decoupled from population — they have their own slots
+// in the right sidebar. The kingdom population only tracks Le Peuple
+// (anonymous civilians + soldiers).
+function kingdomCivTotal() { return civCount(); }
+function kingdomSolTotal() { return solCount(); }
 function kingdomPopTotal() { return kingdomCivTotal() + kingdomSolTotal(); }
-function kingdomPopCap() {
-  // Anonymous capacity + special-unit grid slots (Conseil + Cour size) +
-  // protected pop slots (they don't take any housing — counted as their own).
-  return civSlotsCap() + solSlotsCap()
-       + (state.court.conseilCols * state.court.conseilRows)
-       + state.court.courSize
-       + protectedCivPop();
-}
+function kingdomPopCap() { return civSlotsCap() + solSlotsCap(); }
 
 // ═══════════════════════════════════════════════════════════════
 // RENDER: MAP
@@ -1119,6 +1081,10 @@ function renderSelection() {
   }
   elSelLayer.appendChild(r);
 
+  // Organic route preview from castle to zone center, plus proximity markers.
+  // Drawn for live drag, committed selection, and active expedition alike.
+  renderRoutePreview(sel, !!expMode);
+
   // Handles only on committed selection (never during expedition)
   if (!state.commitedSelection) return;
 
@@ -1150,60 +1116,75 @@ function renderSelection() {
   mv.addEventListener('mousedown', (ev) => beginSelectionEdit(ev, 'move'));
   elSelLayer.appendChild(mv);
 
-  // Assignment overlay: per-cell halos showing where civils/soldats are sent.
-  if (state.panelOpen && panelState && panelCtx) renderExpAssignment();
+  // Per-cell civ/sol icons inside the zone are intentionally left out: the
+  // expedition party is now auto-derived (no manual assignment), and a clean
+  // zone reads better.
 }
 
-// ── Per-cell assignment overlay (civils gold / soldats red / unsent grey) ──
+// Draw the curved (visual) route + ! markers in the selection layer.
+// Visual curve and event-detection logic are intentionally decoupled:
+//  - the curve is the Bezier from buildExpeditionRoute (cosmetic)
+//  - the markers come from straight-line proximity (so the player can't
+//    nudge the zone to dodge events by reshaping the curve).
+// `active` is true once an expedition has launched. In active mode we render
+// the clusters that were precomputed at launch time (skipping consumed ones).
+function renderRoutePreview(sel, active) {
+  const target = { x: (sel.x1 + sel.x2) / 2, y: (sel.y1 + sel.y2) / 2 };
+  const route = buildExpeditionRoute(target);
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'exp-route' + (active ? ' active' : ''));
+  svg.setAttribute('width', MAP_SIZE * TILE);
+  svg.setAttribute('height', MAP_SIZE * TILE);
+  const halo = document.createElementNS(NS, 'path');
+  halo.setAttribute('d', route.d);
+  halo.setAttribute('class', 'exp-route-halo');
+  svg.appendChild(halo);
+  const line = document.createElementNS(NS, 'path');
+  line.setAttribute('d', route.d);
+  line.setAttribute('class', 'exp-route-line');
+  svg.appendChild(line);
+  elSelLayer.appendChild(svg);
+
+  // During active expedition, surviving markers live in state.expedition.clusters.
+  // Otherwise we recompute them from the straight line for the planning preview.
+  const clusters = active && state.expedition && state.expedition.clusters
+    ? state.expedition.clusters.filter(c => !c.consumed)
+    : expeditionMarkers(straightLineSamples(target), sel);
+
+  for (const cl of clusters) {
+    const m = document.createElement('div');
+    m.className = 'exp-marker exp-marker-' + cl.kind;
+    m.textContent = '!';
+    m.style.left = ((cl.cx + 0.5) * TILE) + 'px';
+    m.style.top  = ((cl.cy + 0.5) * TILE) + 'px';
+    if (cl.id != null) m.dataset.clusterId = cl.id;
+    elSelLayer.appendChild(m);
+  }
+}
+
+// Kept as a no-op so any leftover call stays safe. The per-cell civ/sol icons
+// inside the zone were removed when the party became auto-derived.
 function renderExpAssignment() {
-  // Clear any existing overlay first (idempotent).
   elSelLayer.querySelectorAll('.exp-assign').forEach(n => n.remove());
-  if (!state.panelOpen || !panelState || !panelCtx) return;
-  // Use the up-to-date cells for the current commited selection.
-  const sel = state.commitedSelection;
-  if (!sel) return;
-  const cells = zoneCells(sel);
-  const civils = panelState.civils;
-  const fighters = panelState.fighters;
+}
 
-  const wrap = document.createElement('div');
-  wrap.className = 'exp-assign';
-  wrap.style.position = 'absolute';
-  wrap.style.left = '0';
-  wrap.style.top = '0';
-  wrap.style.width = (MAP_SIZE * TILE) + 'px';
-  wrap.style.height = (MAP_SIZE * TILE) + 'px';
-  wrap.style.pointerEvents = 'none';
-
-  for (let i = 0; i < cells.length; i++) {
-    const c = cells[i];
-    const role = i < civils ? 'civ' : (i < civils + fighters ? 'sol' : 'idle');
-    const t = document.createElement('div');
-    t.className = 'exp-cell exp-cell-' + role;
-    t.style.left = (c.x * TILE) + 'px';
-    t.style.top  = (c.y * TILE) + 'px';
-    t.style.width = TILE + 'px';
-    t.style.height = TILE + 'px';
-    if (role === 'civ') t.textContent = '👤';
-    else if (role === 'sol') t.textContent = '🛡';
-    wrap.appendChild(t);
-  }
-
-  // Re-enable pointer events on the wrap so wheel events fire (only if option enabled).
-  if (state.settings.wheelChangesPop) {
-    wrap.style.pointerEvents = 'auto';
-    wrap.addEventListener('wheel', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const dir = ev.deltaY > 0 ? -1 : 1;
-      if (ev.shiftKey) panelBumpFighters(dir);
-      else panelBumpCivils(dir);
-      panelClamp();
-      refreshExpeditionPanel();
-    }, { passive: false });
-  }
-
-  elSelLayer.appendChild(wrap);
+// Populate the expedition panel's scene with little walking civilians and
+// soldiers (one sprite per unit, capped). Reuses the peuple sprite styling
+// for visual consistency.
+const EXP_SCENE_MAX_SPRITES = 18;
+function populateExpScene(civils, fighters) {
+  const host = document.getElementById('exp-sprites');
+  if (!host) return;
+  host.innerHTML = '';
+  const total = civils + fighters;
+  if (total <= 0) return;
+  const shown = Math.min(total, EXP_SCENE_MAX_SPRITES);
+  const civShown = Math.round((civils / total) * shown);
+  const solShown = shown - civShown;
+  for (let i = 0; i < civShown; i++) host.appendChild(makePeupleSprite('civ', i, shown));
+  for (let i = 0; i < solShown; i++) host.appendChild(makePeupleSprite('sol', civShown + i, shown));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1388,27 +1369,29 @@ function openExpeditionPanel() {
   const dist = zoneDistance(sel);
   const duration = expDurationMonths(dist);
   const maxFighters = state.soldiers + state.generals;
-  // Civils available = anonymous (state.population - soldiers/generals) + protected pop
-  // from the Mère du Roi. Protected pop is deployable but never dies.
-  const civsAvail = Math.max(0, state.population - maxFighters) + protectedCivPop();
+  const civsAvail = Math.max(0, state.population - maxFighters);
   const cellsCount = cells.length;
-  const monsterCells = cells.reduce((n, c) => n + (c.type === CASE.MONSTER || c.type === CASE.CORRUPTED ? 1 : 0), 0);
-  panelCtx = { sel, cells, dist, duration, cellsCount, maxFighters, civsAvail, monsterCells };
-
-  if (!state.panelOpen || !panelState) {
-    const f0 = Math.min(monsterCells, maxFighters, cellsCount);
-    const c0 = Math.min(cellsCount - f0, civsAvail);
-    panelState = { civils: c0, fighters: f0 };
-  }
-  panelClamp();
+  // Threat count = red clusters detected on the planned trip (path + zone+1).
+  // Damage is fully resolved at launch time: deficit = max(0, threats - soldiers
+  // sent), split between soldiers and civilians in the party.
+  const target = { x: (sel.x1 + sel.x2) / 2, y: (sel.y1 + sel.y2) / 2 };
+  const threats = expeditionMarkers(straightLineSamples(target), sel)
+    .filter(c => c.kind === 'red').length;
+  const civilsToSend  = Math.min(cellsCount, civsAvail);
+  const soldiersToSend = Math.min(threats, maxFighters);
+  const deficit  = Math.max(0, threats - soldiersToSend);
+  const solDeath = Math.min(soldiersToSend, Math.floor(deficit / 2));
+  const civDeath = deficit - solDeath;
+  panelCtx = { sel, cells, dist, duration, cellsCount, maxFighters, civsAvail,
+               threats, soldiersToSend, civilsToSend, solDeath, civDeath };
+  // panelState is now fully derived — no longer player-editable.
+  panelState = { civils: civilsToSend, fighters: soldiersToSend };
 
   const renderPanel = () => {
     const sendPop = panelState.civils + panelState.fighters;
     const costs = calcCosts(sendPop, panelState.fighters, duration, dist);
     const penalties = calcPenalties(costs);
-    // Available manpower = anonymous + protected pop (Mère's household).
-    const totalAvail = state.population + protectedCivPop();
-    const validUnits = sendPop >= 1 && sendPop <= totalAvail;
+    const validUnits = sendPop >= 1 && sendPop <= state.population;
     const hasPenalty = penalties.unitsLost > 0 || penalties.stress > 0 || Object.keys(penalties.substitutePay).length > 0;
     const penaltyParts = [];
     if (penalties.unitsLost) penaltyParts.push(`-${penalties.unitsLost} unité${penalties.unitsLost > 1 ? 's' : ''}`);
@@ -1431,23 +1414,42 @@ function openExpeditionPanel() {
         </div>
 
         <div class="exp-section">
-          <div class="sec-head">🌿 <strong>Civils</strong> — ${panelState.civils} <span class="sec-sub">/ ${civsAvail} dispo · cases ${cellsCount}</span></div>
-          <div class="jauge" id="jauge-civ">
-            ${civsAvail > 0 ? `<div class="jauge-fill exp" style="width:${(panelState.civils/civsAvail)*100}%;"></div>
-            <div class="jauge-handle" style="left:${(panelState.civils/civsAvail)*100}%;"></div>` : ''}
-            <div class="jauge-labels"><span>Expé <strong>${panelState.civils}</strong></span><span><strong>${civsAvail - panelState.civils}</strong> Château</span></div>
+          <div class="sec-head">🚛 <strong>La caravane</strong></div>
+          <div class="exp-scene" id="exp-scene">
+            <div class="exp-sky"></div>
+            <div class="exp-hills"></div>
+            <div class="exp-wagon"></div>
+            <div class="exp-sprites" id="exp-sprites"></div>
+          </div>
+          <div class="exp-counts">
+            <div class="exp-count" title="Civils envoyés">
+              <span class="ec-icon">👤</span>
+              <span class="ec-text"><span class="ec-num">${panelState.civils}</span> civil${panelState.civils>1?'s':''}<span class="ec-cap"> / ${cellsCount} cases</span></span>
+            </div>
+            <div class="exp-count" title="Soldats envoyés">
+              <span class="ec-icon">🛡️</span>
+              <span class="ec-text"><span class="ec-num">${panelState.fighters}</span> soldat${panelState.fighters>1?'s':''}<span class="ec-cap"> / ${panelCtx.threats} menace${panelCtx.threats>1?'s':''}</span></span>
+            </div>
+          </div>
+          <div class="exp-fixed">
+            ${panelCtx.threats === 0 ? 'Aucune menace sur la route'
+              : panelState.fighters >= panelCtx.threats
+                ? `<span class="exp-good">Soldats suffisants — aucune perte attendue</span>`
+                : `<span class="exp-warn">Manque ${panelCtx.threats - panelState.fighters} soldat${panelCtx.threats - panelState.fighters>1?'s':''}</span>`}
+            ${panelState.civils < cellsCount
+              ? ` · <span class="exp-warn">Pop. insuffisante (${panelState.civils}/${cellsCount})</span>` : ''}
           </div>
         </div>
 
-        <div class="exp-section">
-          <div class="sec-head">🛡 <strong>Soldats</strong> — ${panelState.fighters} <span class="sec-sub">/ ${maxFighters} dispo · ${monsterCells} hostile${monsterCells > 1 ? 's' : ''}</span></div>
-          <div class="jauge" id="jauge-sol">
-            ${maxFighters > 0 ? `<div class="jauge-fill fighters" style="width:${(panelState.fighters/maxFighters)*100}%;"></div>
-            <div class="jauge-handle" style="left:${(panelState.fighters/maxFighters)*100}%;"></div>` : ''}
-            <div class="jauge-labels"><span>Combat <strong>${panelState.fighters}</strong></span><span><strong>${maxFighters - panelState.fighters}</strong> Garde</span></div>
+        ${(panelCtx.solDeath + panelCtx.civDeath) > 0 ? `
+        <div class="exp-section exp-losses-preview">
+          <div class="sec-head">⚠ <strong>Pertes prévues</strong> — ${panelCtx.solDeath + panelCtx.civDeath}</div>
+          <div class="exp-fixed">
+            ${panelCtx.solDeath > 0 ? `<span class="exp-warn">🛡 −${panelCtx.solDeath} soldat${panelCtx.solDeath>1?'s':''}</span>` : ''}
+            ${panelCtx.solDeath > 0 && panelCtx.civDeath > 0 ? ' · ' : ''}
+            ${panelCtx.civDeath > 0 ? `<span class="exp-warn">💀 −${panelCtx.civDeath} civil${panelCtx.civDeath>1?'s':''}</span>` : ''}
           </div>
-          <div style="font-size:11px; color: var(--ink-3); margin-top: 4px;">Molette = civils · Maj+molette = soldats · Total ${sendPop}/${cellsCount} cases</div>
-        </div>
+        </div>` : ''}
 
         <div class="exp-section">
           <div class="sec-head">💰 <strong>Coûts prévus</strong></div>
@@ -1471,6 +1473,7 @@ function openExpeditionPanel() {
     wirePanel(duration, dist, cells, sel);
     courtHighlightDeployed(sendPop, panelState.fighters);
     renderExpAssignment();
+    populateExpScene(panelState.civils, panelState.fighters);
   };
 
   const wirePanel = (duration, dist, cells, sel) => {
@@ -1480,30 +1483,9 @@ function openExpeditionPanel() {
       const costs = calcCosts(sendPop, panelState.fighters, duration, dist);
       launchExpedition(sel, cells, sendPop, panelState.fighters, duration, costs);
     };
-    wireJauge('jauge-civ', (pct) => {
-      const target = Math.round(pct * civsAvail);
-      panelBumpCivils(target - panelState.civils);
-      panelClamp();
-      renderPanel();
-    });
-    wireJauge('jauge-sol', (pct) => {
-      const target = Math.round(pct * maxFighters);
-      panelBumpFighters(target - panelState.fighters);
-      panelClamp();
-      renderPanel();
-    });
-    // Wheel anywhere on the panel: civils ±1, Maj+wheel: soldats ±1.
-    // Use onwheel (assignment) to replace any prior handler from previous renders.
-    elSbExp.onwheel = (ev) => {
-      if (!state.settings.wheelChangesPop) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      const dir = ev.deltaY > 0 ? -1 : 1;
-      if (ev.shiftKey) panelBumpFighters(dir);
-      else panelBumpCivils(dir);
-      panelClamp();
-      renderPanel();
-    };
+    // Civils & soldats are auto-derived from zone size & threat count, so
+    // there are no jauges to wire up and the wheel must be a no-op.
+    elSbExp.onwheel = null;
   };
 
   const wireJauge = (id, cb) => {
@@ -1627,13 +1609,58 @@ function launchExpedition(sel, cells, sendPop, fighters, duration, costs) {
   const visitList = pickHarvestCells(cells, sendPop).map(c => ({ x: c.x, y: c.y }));
   const returnPath = linePath(target, CASTLE_CENTER);
 
+  // Detect markers along a STRAIGHT line from castle to zone center
+  // (intentionally decoupled from the visual Bezier so the player cannot
+  // dodge events by tweaking the zone to bend the curve).
+  const targetExact = { x: (sel.x1 + sel.x2) / 2, y: (sel.y1 + sel.y2) / 2 };
+  const clusters = expeditionMarkers(straightLineSamples(targetExact), sel);
+  // Caravan animates along the visual Bezier curve; cluster fireT is the
+  // parametric t∈[0,1] at which the curve passes closest to the cluster.
+  const route = buildExpeditionRoute(targetExact);
+  const sampN = route.samples.length;
+  for (let i = 0; i < clusters.length; i++) {
+    const cl = clusters[i];
+    cl.id = i;
+    cl.consumed = false;
+    const cxp = (cl.cx + 0.5) * TILE, cyp = (cl.cy + 0.5) * TILE;
+    let bestIdx = 0, bestD2 = Infinity;
+    for (let j = 0; j < sampN; j++) {
+      const s = route.samples[j];
+      const dx = s.px - cxp, dy = s.py - cyp;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < bestD2) { bestD2 = d2; bestIdx = j; }
+    }
+    cl.fireT = Math.max(0.01, bestIdx / Math.max(1, sampN - 1));
+  }
+
+  // Event policy (positive events temporarily off):
+  //   All damage is resolved at launch from the threat count, NOT from per-
+  //   cluster rolls. Deficit = max(0, threats - soldiersInParty), split into
+  //   solDeath = floor(deficit/2) (capped by soldiers), civDeath = remainder.
+  //   Red clusters are tagged in fireT order: first 'defended', then 'civ'
+  //   losses, then 'sol' losses — purely visual.
+  //   Green clusters keep their ! marker as a planning hint but do nothing.
+  const redClusters = clusters.filter(c => c.kind === 'red')
+    .slice().sort((a, b) => a.fireT - b.fireT);
+  const threats = redClusters.length;
+  const deficit = Math.max(0, threats - fighters);
+  const preSolDeath = Math.min(fighters, Math.floor(deficit / 2));
+  const preCivDeath = deficit - preSolDeath;
+  let i = 0;
+  const defended = Math.min(threats, fighters);
+  for (let k = 0; k < defended; k++) redClusters[i++].outcome = 'defended';
+  for (let k = 0; k < preCivDeath; k++) redClusters[i++].outcome = 'civ';
+  for (let k = 0; k < preSolDeath; k++) redClusters[i++].outcome = 'sol';
+
   state.expedition = {
     sel, cells, sendPop, fighters, duration, costs,
     phase: 'out',  // out → visit → return → done
     outPath, visitList, returnPath,
     pathIdx: 0, visitIdx: 0,
     gains: { wheat: 0, water: 0, gold: 0, wood: 0, stone: 0 },
-    losses: 0,
+    // Pre-resolved deaths from threat clusters. Combat with monsters left
+    // alive in the zone will still add on top of this.
+    losses: preSolDeath + preCivDeath,
     events: [],
     caravanPos: { x: CASTLE_CENTER.x, y: CASTLE_CENTER.y },
     journalTitle: `Expé (${sel.x2-sel.x1+1}×${sel.y2-sel.y1+1})`,
@@ -1641,6 +1668,21 @@ function launchExpedition(sel, cells, sendPop, fighters, duration, costs) {
     tickCounter: 0,
     // Cour royale — which special units from the conseil ride along.
     deployedSpecials: courtEligibleForExpedition(sendPop, fighters),
+    // Clusters along the straight detection line. Each carries: id, fireT,
+    // consumed, optional event (preset). When the curve animation crosses
+    // fireT, the cluster is consumed and its event (if any) fires.
+    clusters,
+    // Damage is computed up-front at launch from the threat count vs soldiers
+    // in the party. consumeCluster does NOT mutate these.
+    eventSoldierLosses: preSolDeath,
+    eventCivLosses: preCivDeath,
+    // Curve & timings for the rAF animation along the organic path.
+    curve: route.ctrl,
+    outDuration: expeditionTripDuration(outPath.length),
+    returnDuration: expeditionTripDuration(returnPath.length),
+    visitTickMs: 220,
+    phaseStart: 0,
+    lastVisitTick: 0,
   };
 
   closeExpeditionPanel();
@@ -1648,8 +1690,152 @@ function launchExpedition(sel, cells, sendPop, fighters, duration, costs) {
   addJournal('📜 Expédition lancée vers une zone ' + `${sel.x2-sel.x1+1}×${sel.y2-sel.y1+1}`, 'info');
 
   if (expTimer) cancelAnimationFrame(expTimer);
-  lastTick = 0;
   expTimer = requestAnimationFrame(tickExpedition);
+}
+
+// Build a smooth, slightly organic curve from the castle to a target tile.
+// Returns: { d: SVG path string in pixel coords; samples: [{px,py}] for proximity tests }.
+// Cubic Bezier with two control points perturbed perpendicular to the straight line.
+// Bend amount and direction are deterministic for a given target so the path is
+// stable while the user drags within a tile, but evolves as the target moves.
+function buildExpeditionRoute(target) {
+  const sx = (CASTLE_CENTER.x + 0.5) * TILE;
+  const sy = (CASTLE_CENTER.y + 0.5) * TILE;
+  const tx = (target.x + 0.5) * TILE;
+  const ty = (target.y + 0.5) * TILE;
+  const dx = tx - sx, dy = ty - sy;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len, ny = dx / len;
+  const hash = (a, b) => {
+    const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+    return (v - Math.floor(v)) - 0.5;
+  };
+  const wA = hash(target.x, target.y);
+  const wB = hash(target.x + 17, target.y - 31);
+  const amp = Math.min(len * 0.22, 110);
+  const c1x = sx + dx * 0.33 + nx * (amp * 0.55 + amp * wA);
+  const c1y = sy + dy * 0.33 + ny * (amp * 0.55 + amp * wA);
+  const c2x = sx + dx * 0.66 + nx * (-amp * 0.35 + amp * wB);
+  const c2y = sy + dy * 0.66 + ny * (-amp * 0.35 + amp * wB);
+  const d = `M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${tx.toFixed(1)} ${ty.toFixed(1)}`;
+  const ctrl = { sx, sy, c1x, c1y, c2x, c2y, tx, ty };
+  const N = 64;
+  const samples = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N, omt = 1 - t;
+    const px = omt*omt*omt*sx + 3*omt*omt*t*c1x + 3*omt*t*t*c2x + t*t*t*tx;
+    const py = omt*omt*omt*sy + 3*omt*omt*t*c1y + 3*omt*t*t*c2y + t*t*t*ty;
+    samples.push({ px, py });
+  }
+  return { d, samples, ctrl };
+}
+
+// Evaluate the cubic Bezier of a route at parametric position t ∈ [0, 1].
+function bezierAt(ctrl, t) {
+  const omt = 1 - t;
+  const px = omt*omt*omt*ctrl.sx + 3*omt*omt*t*ctrl.c1x + 3*omt*t*t*ctrl.c2x + t*t*t*ctrl.tx;
+  const py = omt*omt*omt*ctrl.sy + 3*omt*omt*t*ctrl.c1y + 3*omt*t*t*ctrl.c2y + t*t*t*ctrl.ty;
+  return { px, py };
+}
+
+// Straight-line samples from castle to target tile, used for event detection
+// so the player can't dodge events by tweaking the zone to bend the visual curve.
+function straightLineSamples(target) {
+  const sx = (CASTLE_CENTER.x + 0.5) * TILE;
+  const sy = (CASTLE_CENTER.y + 0.5) * TILE;
+  const tx = (target.x + 0.5) * TILE;
+  const ty = (target.y + 0.5) * TILE;
+  const N = 64, samples = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    samples.push({ px: sx + (tx - sx) * t, py: sy + (ty - sy) * t });
+  }
+  return samples;
+}
+
+// For a set of pixel-space samples (the path), return one cluster per group of
+// adjacent same-kind cells. Output: [{kind:'red'|'green', cx, cy, cells:[…]}].
+// Detection is bicephalous on purpose:
+//   - cells inside the zone OR ≤ 1 case from its perimeter always count
+//   - cells further out only count if ≤ EXP_MARKER_RANGE cases of a path sample
+//     AND the sample is itself outside the zone+1 (so the zone doesn't radiate).
+// This keeps the wide path-corridor we want for the trip while preventing the
+// zone itself from sweeping a 3-case halo of detection.
+// 'red'   = MONSTER or CORRUPTED (camp hostile)
+// 'green' = GOLD (mine) or HAMLET (maison)
+function expeditionMarkers(samples, sel) {
+  const R = EXP_MARKER_RANGE * TILE;
+  const R2 = R * R;
+  const zb = sel ? {
+    x1: Math.max(0, Math.min(sel.x1, sel.x2) - 1),
+    y1: Math.max(0, Math.min(sel.y1, sel.y2) - 1),
+    x2: Math.min(MAP_SIZE - 1, Math.max(sel.x1, sel.x2) + 1),
+    y2: Math.min(MAP_SIZE - 1, Math.max(sel.y1, sel.y2) + 1),
+  } : null;
+  // Path samples = those outside the zone+1 box (so a sample sitting inside
+  // the zone doesn't drag along its R=3 corridor).
+  const pathSamples = zb ? samples.filter(s => {
+    const cx = s.px / TILE, cy = s.py / TILE;
+    return !(cx >= zb.x1 && cx <= zb.x2 + 1 && cy >= zb.y1 && cy <= zb.y2 + 1);
+  }) : samples;
+  let cMinX = Infinity, cMaxX = -Infinity, cMinY = Infinity, cMaxY = -Infinity;
+  for (const s of samples) {
+    if (s.px < cMinX) cMinX = s.px;
+    if (s.px > cMaxX) cMaxX = s.px;
+    if (s.py < cMinY) cMinY = s.py;
+    if (s.py > cMaxY) cMaxY = s.py;
+  }
+  const ix0 = Math.max(0, Math.floor(cMinX / TILE) - EXP_MARKER_RANGE);
+  const ix1 = Math.min(MAP_SIZE - 1, Math.ceil(cMaxX / TILE) + EXP_MARKER_RANGE);
+  const iy0 = Math.max(0, Math.floor(cMinY / TILE) - EXP_MARKER_RANGE);
+  const iy1 = Math.min(MAP_SIZE - 1, Math.ceil(cMaxY / TILE) + EXP_MARKER_RANGE);
+  const hits = new Map(); // "x,y" → kind
+  for (let y = iy0; y <= iy1; y++) {
+    for (let x = ix0; x <= ix1; x++) {
+      const c = cellAt(x, y);
+      if (!c) continue;
+      // Positive events are off — only threats (red clusters) are detected.
+      const isRed = (c.type === CASE.MONSTER || c.type === CASE.CORRUPTED);
+      if (!isRed) continue;
+      const isGreen = false;
+      const inZonePlusOne = !!(zb && x >= zb.x1 && x <= zb.x2 && y >= zb.y1 && y <= zb.y2);
+      if (!inZonePlusOne) {
+        const cxp = (x + 0.5) * TILE, cyp = (y + 0.5) * TILE;
+        let best = Infinity;
+        for (const s of pathSamples) {
+          const ddx = s.px - cxp, ddy = s.py - cyp;
+          const d2 = ddx*ddx + ddy*ddy;
+          if (d2 < best) { best = d2; if (best <= R2) break; }
+        }
+        if (best > R2) continue;
+      }
+      hits.set(x + ',' + y, { x, y, kind: isRed ? 'red' : 'green' });
+    }
+  }
+  const visited = new Set();
+  const clusters = [];
+  for (const [k, h] of hits) {
+    if (visited.has(k)) continue;
+    const stack = [h]; visited.add(k);
+    const cluster = { kind: h.kind, cells: [] };
+    while (stack.length) {
+      const cur = stack.pop();
+      cluster.cells.push(cur);
+      for (const [ddx, ddy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const nk = (cur.x + ddx) + ',' + (cur.y + ddy);
+        if (visited.has(nk)) continue;
+        const n = hits.get(nk);
+        if (!n || n.kind !== cluster.kind) continue;
+        visited.add(nk); stack.push(n);
+      }
+    }
+    let scx = 0, scy = 0;
+    for (const c of cluster.cells) { scx += c.x; scy += c.y; }
+    cluster.cx = scx / cluster.cells.length;
+    cluster.cy = scy / cluster.cells.length;
+    clusters.push(cluster);
+  }
+  return clusters;
 }
 
 function linePath(a, b) {
@@ -1688,50 +1874,81 @@ function spawnCaravan() {
   elMapLayers.appendChild(caravanEl);
 }
 
+// Move caravan to a tile (used during the visit phase, where each step is a
+// teleport to the next harvest cell). Re-enables the CSS transition so the
+// caravan glides between cells inside the zone.
 function moveCaravan(x, y) {
   if (!caravanEl) return;
+  caravanEl.classList.remove('flowing');
   caravanEl.style.left = (x * TILE + TILE/2 - 12) + 'px';
   caravanEl.style.top  = (y * TILE + TILE/2 - 12) + 'px';
   state.expedition.caravanPos = { x, y };
 }
 
-let expTimer = null, lastTick = 0;
-const TICK_MS = 280; // ms per step
+// Smoothly place the caravan on the Bezier curve at parametric position t.
+// Used continuously by rAF during 'out' and 'return' phases, so the caravan
+// follows the drawn organic path fluidly.
+function moveCaravanCurveT(t) {
+  if (!caravanEl) return;
+  const exp = state.expedition;
+  if (!exp || !exp.curve) return;
+  caravanEl.classList.add('flowing');
+  const p = bezierAt(exp.curve, Math.max(0, Math.min(1, t)));
+  caravanEl.style.left = (p.px - 12) + 'px';
+  caravanEl.style.top  = (p.py - 12) + 'px';
+  exp.caravanPos = { x: p.px / TILE - 0.5, y: p.py / TILE - 0.5 };
+}
+
+let expTimer = null;
+// Total animation duration for one curve traversal. Scales with path length
+// so short trips stay snappy (~1.5s) and long trips stay readable (~4s).
+function expeditionTripDuration(pathLen) {
+  return Math.min(4000, Math.max(1500, pathLen * 110));
+}
 
 function tickExpedition(ts) {
   if (!state.expedition) return;
-  if (!lastTick) lastTick = ts;
-  if (ts - lastTick < TICK_MS) { expTimer = requestAnimationFrame(tickExpedition); return; }
-  lastTick = ts;
-
   const exp = state.expedition;
+
   if (exp.phase === 'out') {
-    exp.pathIdx++;
-    if (exp.pathIdx >= exp.outPath.length) {
-      exp.phase = 'visit'; exp.visitIdx = 0;
-    } else {
-      const p = exp.outPath[exp.pathIdx];
-      moveCaravan(p.x, p.y);
-      // random event chance during travel
-      if (rng() < 0.05) triggerRandomEvent();
+    if (!exp.phaseStart) exp.phaseStart = ts;
+    const t = Math.min(1, (ts - exp.phaseStart) / exp.outDuration);
+    moveCaravanCurveT(t);
+    // Fire any cluster whose fireT was just crossed.
+    if (exp.clusters) {
+      for (const cl of exp.clusters) {
+        if (!cl.consumed && t >= cl.fireT) consumeCluster(cl);
+      }
+    }
+    if (t >= 1) {
+      exp.phase = 'visit';
+      exp.visitIdx = 0;
+      exp.phaseStart = 0;
+      exp.lastVisitTick = 0;
+      consumeRemainingClusters();
     }
   } else if (exp.phase === 'visit') {
-    if (exp.visitIdx >= exp.visitList.length) {
-      exp.phase = 'return'; exp.pathIdx = 0;
-    } else {
-      const v = exp.visitList[exp.visitIdx++];
-      moveCaravan(v.x, v.y);
-      resolveCell(v.x, v.y);
+    if (!exp.lastVisitTick) exp.lastVisitTick = ts;
+    if (ts - exp.lastVisitTick >= (exp.visitTickMs || 220)) {
+      exp.lastVisitTick = ts;
+      if (exp.visitIdx >= exp.visitList.length) {
+        exp.phase = 'return';
+        exp.phaseStart = 0;
+      } else {
+        const v = exp.visitList[exp.visitIdx++];
+        moveCaravan(v.x, v.y);
+        resolveCell(v.x, v.y);
+      }
     }
   } else if (exp.phase === 'return') {
-    exp.pathIdx++;
-    if (exp.pathIdx >= exp.returnPath.length) {
+    if (!exp.phaseStart) exp.phaseStart = ts;
+    const elapsed = (ts - exp.phaseStart) / exp.returnDuration;
+    const t = Math.max(0, 1 - Math.min(1, elapsed));
+    moveCaravanCurveT(t);
+    if (t <= 0) {
       exp.phase = 'done';
       finishExpedition();
       return;
-    } else {
-      const p = exp.returnPath[exp.pathIdx];
-      moveCaravan(p.x, p.y);
     }
   }
 
@@ -1742,6 +1959,8 @@ function tickExpedition(ts) {
 function resolveCell(x, y) {
   const c = cellAt(x, y);
   if (!c) return;
+  // Cells already neutralised by an en-route event don't yield twice.
+  if (c.consumedByEvent) return;
   const info = CELL_INFO[c.type];
   const exp = state.expedition;
 
@@ -1805,17 +2024,63 @@ function resolveCell(x, y) {
   }
 }
 
-function triggerRandomEvent() {
+// Mark a cluster as consumed: remove its DOM marker (with a quick fade) and,
+// if the cluster carries a preset event, fire it with VFX bound to the cluster
+// location. Cells in the cluster are flagged so the visit-phase harvesters
+// don't redo the event's loot.
+function consumeCluster(cl) {
+  if (cl.consumed) return;
+  cl.consumed = true;
+  const node = elSelLayer.querySelector(`.exp-marker[data-cluster-id="${cl.id}"]`);
+  if (node) {
+    node.classList.add('exp-marker-fading');
+    setTimeout(() => node.remove(), 220);
+  }
+  // Red clusters: the camp is neutralised on the way. Cells flip to grass
+  // (sprite is removed from the map) and resolveCell skips them later.
+  if (cl.kind === 'red') {
+    for (const c of cl.cells) {
+      const cell = cellAt(c.x, c.y);
+      if (!cell) continue;
+      cell.consumedByEvent = true;
+      if (cell.type === CASE.MONSTER || cell.type === CASE.CORRUPTED) {
+        cell.type = CASE.GRASS;
+        const node = elMapLayers.querySelector(`.cell[data-x="${c.x}"][data-y="${c.y}"]`);
+        if (node) node.remove();
+      }
+    }
+  }
   const exp = state.expedition;
-  const ev = rPick(EXPEDITION_EVENTS);
-  exp.events.push(ev);
-  if (ev.gain) for (const k of Object.keys(ev.gain)) exp.gains[k] += ev.gain[k];
-  if (ev.loss) for (const k of Object.keys(ev.loss)) exp.gains[k] -= ev.loss[k];
-  if (ev.loseUnits) exp.losses += ev.loseUnits;
-  if (ev.stress) state.kingStress += ev.stress;
-  const p = exp.caravanPos;
-  showBubble(p.x, p.y, ev.msg, 'event');
-  addJournal(ev.msg, 'info');
+  if (!exp) return;
+  const x = cl.cx, y = cl.cy;
+  // Red clusters: outcome was pre-assigned at launch. Just play the cue.
+  // Green clusters: silent disappearance for now (positive events disabled).
+  if (cl.kind === 'red') {
+    if (cl.outcome === 'defended') {
+      puff(x, y, '🛡');
+      showBubble(x, y, '🛡 Défendu', 'good');
+      addJournal('🐺 Embuscade repoussée par les soldats', 'info');
+      exp.events.push({ id: 'ambush_def', msg: '🐺 Embuscade repoussée', kind: 'defended' });
+    } else if (cl.outcome === 'sol') {
+      puff(x, y, '🛡');
+      showBubble(x, y, '🛡 −1 soldat', 'bad');
+      addJournal('🐺 Embuscade : un soldat est tombé', 'bad');
+      exp.events.push({ id: 'ambush_sol', msg: '🐺 Embuscade — soldat tombé', kind: 'sol' });
+    } else if (cl.outcome === 'civ') {
+      puff(x, y, '💥');
+      showBubble(x, y, '−1 ☠️', 'bad');
+      addJournal('🐺 Embuscade : un civil tombe', 'bad');
+      exp.events.push({ id: 'ambush_civ', msg: '🐺 Embuscade — civil tombé', kind: 'civ' });
+    }
+  }
+}
+
+// Sweep any clusters the caravan didn't physically pass (rounding, short
+// outPath) so no orphan ! marker lingers once we leave the out phase.
+function consumeRemainingClusters() {
+  const exp = state.expedition;
+  if (!exp || !exp.clusters) return;
+  for (const cl of exp.clusters) if (!cl.consumed) consumeCluster(cl);
 }
 
 function finishExpedition() {
@@ -1837,17 +2102,26 @@ function finishExpedition() {
     flashSlot(key, 'plus');
   });
 
-  // apply unit losses (priority: ordinary soldiers → civilians; generals die last)
+  // apply unit losses
   let losses = Math.min(exp.losses, exp.sendPop);
   // cap to 80%
   losses = Math.min(losses, Math.floor(exp.sendPop * 0.8));
   expSnapshot.losses = losses;
   let remaining = losses;
   state.unitsLost += losses;
-  // Civilians first, then soldiers. The Mère du Roi's protected pop never dies
-  // — losses can only fall on anonymous civilians.
+  // 1) Event-driven soldier sacrifices come first — soldiers protected the
+  //    party, so they fall before any civilian loss is tallied.
+  const evSoldier = Math.min(exp.eventSoldierLosses || 0, remaining, state.soldiers);
+  state.soldiers -= evSoldier; state.population -= evSoldier;
+  remaining -= evSoldier;
+  // 2) Event-driven civilian losses (when no soldier was available to absorb).
+  const evCiv = Math.min(exp.eventCivLosses || 0, remaining,
+    Math.max(0, state.population - state.soldiers - state.generals));
+  state.population -= evCiv;
+  remaining -= evCiv;
+  // 3) Combat losses follow the legacy civilians-first order.
   const civilians = state.population - state.soldiers - state.generals;
-  const takeCiv = Math.min(remaining, Math.max(0, exp.sendPop - exp.fighters));
+  const takeCiv = Math.min(remaining, Math.max(0, exp.sendPop - exp.fighters - (exp.eventCivLosses || 0)));
   const civDead = Math.min(civilians, takeCiv);
   state.population -= civDead;
   remaining -= civDead;
@@ -1859,21 +2133,12 @@ function finishExpedition() {
     const takeGen = Math.min(remaining, state.generals);
     state.generals -= takeGen; state.population -= takeGen;
   }
-  // Per-commoner death notification — keeps the loss tangible vs. a silent
-  // counter drop. Specials get their own per-name lines via courtResults.
+  // Per-commoner death notification — keeps loss tangible.
   for (let i = 0; i < civDead; i++) {
     addJournal('💀 Un ouvrier n\'est pas revenu.', 'bad');
   }
   for (let i = 0; i < takeSol; i++) {
     addJournal('💀 Un soldat est tombé en expédition.', 'bad');
-  }
-  // If the rolled losses would have hit Mother's protected pop (i.e. the
-  // share assigned to civilians exceeds the anonymous civilian pool), narrate
-  // it — those were spared by her protection.
-  const civilianLossesShare = takeCiv;
-  const protectedSpared = Math.max(0, civilianLossesShare - civDead);
-  if (state.court.motherAlive && protectedSpared > 0) {
-    addJournal(`🛡️ La Mère du Roi protège les siens : ${protectedSpared} ouvrier${protectedSpared > 1 ? 's reviennent' : ' revient'} sain${protectedSpared > 1 ? 's' : ''} et sauf${protectedSpared > 1 ? 's' : ''}.`, 'good');
   }
 
   state.expsCompleted++;
@@ -1898,11 +2163,8 @@ function finishExpedition() {
   state.expedition = null;
   // Court: streak, injury/death rolls, acquisition — build report data.
   const courtResults = applyCourtExpeditionOutcome(expSnapshot);
-  // Mère du Roi stars react to global expedition outcome:
-  //   any death (anonymous or special) → reset to 1★
-  //   clean expé (no death anywhere) → +1★ (capped 3)
-  updateMotherStarsFromOutcome(losses, courtResults.casualties);
-  // v3: encounters from zone content + scripted. No more building-pool drops.
+  // v4: encounters can occur in any expedition. Base chance + per-Maison +
+  // per-hamlet/ruin bonuses. No more founder unit / protected pop.
   const encounters = rollExpeditionEncounters(exp);
   for (const e of encounters) state.court.offer.push(e);
 
@@ -1911,12 +2173,14 @@ function finishExpedition() {
   const seasonDue = state.monthsAt > 0 && state.monthsAt % 3 === 0 && state.kingAlive;
   state.court.pendingCeremony = !!seasonDue;
 
+  const eventSnapshot = (exp.events || []).slice();
   setTimeout(() => {
     showExpeditionReport({
       gains: expSnapshot.gains,
       losses: expSnapshot.losses,
       streakUps: courtResults.streakUps,
       casualties: courtResults.casualties,
+      events: eventSnapshot,
     });
   }, 650);
 }
@@ -1950,12 +2214,6 @@ function advanceMonths(n) {
     if (state.monthsAt % 12 === 0) {
       state.kingAge++;
       if (state.kingAge % 5 === 0) state.kingStress = Math.min(100, state.kingStress + 5);
-      // Mother of the King — natural death at her predetermined age.
-      if (state.court.motherAlive
-          && state.court.motherDeathAge
-          && state.kingAge >= state.court.motherDeathAge) {
-        triggerMotherDeath();
-      }
     }
   }
 }
@@ -2034,9 +2292,10 @@ function evictExcessAnonymous(reason) {
 // ═══════════════════════════════════════════════════════════════
 
 function computeSeasonCosts() {
-  // v3.1: count specials too — they live in the castle but eat the same.
-  const civilians = kingdomCivTotal();
-  const soldiers = kingdomSolTotal();
+  // v4: only anonymous inhabitants pay season costs. Specials in Conseil/Cour
+  // are decoupled from the population system.
+  const civilians = civCount();
+  const soldiers = state.soldiers;
   const hasGranary = state.buildings.some(b => b.id === 'granary');
   const wheatMod = hasGranary ? 0.75 : 1;
   const eff = (typeof courtEffects === 'function') ? courtEffects() : null;
@@ -2203,9 +2462,16 @@ function commitBuildingPlacement(x, y) {
   state.buildings.push({ id: def.id, x, y });
   cancelPlacement();
   if (def.id === 'house') {
-    addJournal(`🏠 Maison construite (+${def.civSlots} logements civils).`, 'info');
+    // 3 housing slots and 1 brand-new civilian moves in (anonymous, unhoused
+    // surplus is clamped elsewhere).
+    if (civCount() < civSlotsCap()) state.population += 1;
+    addJournal(`🏠 Maison construite — +${def.civSlots} logements, +1 civil rejoint le royaume.`, 'good');
   } else if (def.id === 'barracks') {
-    addJournal(`⚔️ Caserne construite (+${def.solSlots} logement soldat).`, 'info');
+    if (solCount() < solSlotsCap()) {
+      state.soldiers += 1;
+      state.population += 1;
+    }
+    addJournal(`⚔️ Caserne construite — +${def.solSlots} logements, +1 soldat rejoint la garde.`, 'good');
   } else {
     addJournal(`🔨 ${def.name} construit.`, 'info');
   }
@@ -3474,9 +3740,14 @@ function courtGrantStarterIfNeeded() { /* noop in v3 */ }
 // narrative encounters) plus scripted events (Membre de Famille on first
 // expedition).
 
-const ENCOUNTER_BASE_CHANCE = 0.25;
-const ENCOUNTER_PER_HAMLET  = 0.30;
+// v4 encounter rates. Every expedition rolls a base chance, boosted by
+// hamlets/ruins visited in the zone AND by the kingdom's own Maisons (the
+// king's reputation grows as the village expands). Special rare-boosting
+// houses (Manoirs etc.) are TBD — placeholder hook below.
+const ENCOUNTER_BASE_CHANCE = 0.30;
+const ENCOUNTER_PER_HAMLET  = 0.25;
 const ENCOUNTER_PER_RUINS   = 0.20;
+const ENCOUNTER_PER_MAISON  = 0.10;   // each Maison built grows the kingdom's pull
 const ENCOUNTER_MAX_PER_EXP = 5;
 
 const HIRE_COST = { common: 3, rare: 10, legendary: 25 };
@@ -3515,27 +3786,19 @@ function pickFromTable(table) {
 function rollExpeditionEncounters(exp) {
   const out = [];
 
-  // Scripted: Membre de Famille on the very first completed expedition.
-  // (state.expsCompleted is incremented just before this is called.)
-  if (state.expsCompleted === 1 && !state.court.starterGranted) {
-    const starter = courtMakeUnit('family_member');
-    if (starter) {
-      starter.scriptedFreeHire = true;     // exception: free Conseil hire
-      starter.encounterStory = 'family';
-      out.push(starter);
-      state.court.starterGranted = true;
-    }
-  }
-
   const hamlets = exp.hamletsVisited || 0;
   const ruins   = exp.ruinsVisited   || 0;
+  const maisons = state.buildings.filter(b => b.id === 'house').length;
 
-  // Primary roll: how many encounters trigger.
+  // Primary roll: how many encounters trigger. Always firing in any expé so
+  // kingdom growth doesn't depend on hamlet/ruins luck.
   let chance = ENCOUNTER_BASE_CHANCE
              + ENCOUNTER_PER_HAMLET * hamlets
-             + ENCOUNTER_PER_RUINS  * ruins;
+             + ENCOUNTER_PER_RUINS  * ruins
+             + ENCOUNTER_PER_MAISON * maisons;
   while (out.length < ENCOUNTER_MAX_PER_EXP && rng() < chance) {
-    // Pick the source weighted by what was visited (hamlets dominate if both).
+    // Pick the source weighted by what was visited. With no hamlets/ruins
+    // visited, default to a "road" source (uses hamlet weights as fallback).
     const sourceWeights = { hamlet: 1 + 2 * hamlets, ruins: 0.3 + 2 * ruins };
     const source = pickFromTable(sourceWeights);
     const enc = makeEncounterFrom(source);
@@ -3696,6 +3959,18 @@ function renderExpeditionReport() {
     .join('');
   const lossPart = s.losses > 0 ? `<div class="er-losses">☠️ <b>${s.losses}</b> unité${s.losses > 1 ? 's' : ''} perdue${s.losses > 1 ? 's' : ''}</div>` : '';
 
+  const eventPart = (s.events && s.events.length) ? `
+    <div class="er-list er-events">
+      <div class="er-list-title">⚔️ Embuscades</div>
+      ${s.events.map(ev => {
+        let effect = '', cls = 'er-good';
+        if (ev.kind === 'defended') { effect = '🛡 Repoussée'; cls = 'er-good'; }
+        else if (ev.kind === 'sol')  { effect = '🛡 −1 soldat'; cls = 'er-bad'; }
+        else if (ev.kind === 'civ')  { effect = '💀 −1 civil'; cls = 'er-bad'; }
+        return `<div class="er-row ${cls}">${escapeHtml(ev.msg)} <span class="er-row-sub">${effect}</span></div>`;
+      }).join('')}
+    </div>` : '';
+
   const streakPart = (s.streakUps && s.streakUps.length) ? `
     <div class="er-list er-streaks">
       <div class="er-list-title">⭐ Progression</div>
@@ -3740,6 +4015,7 @@ function renderExpeditionReport() {
         ${gainParts || '<span class="er-meager">Maigre butin…</span>'}
       </div>
       ${lossPart}
+      ${eventPart}
       ${streakPart}
       ${casualtyPart}
       ${offerPart}
@@ -3967,10 +4243,8 @@ function courtEffects() {
 
     switch (def.id) {
       case 'mother_of_king':
-        // Founder member: +N protected pop where N = her stars (1-3). They
-        // can be deployed in expeditions but never die. Stars rise after a
-        // clean expé and reset to 1 on any death. Full effect on both zones.
-        ctx.protectedCivPop += Math.max(1, Math.min(3, u.stars || 1));
+        // [v3 legacy — kept for back-compat, no current effect. May return
+        // later as a different mechanic.]
         break;
       case 'family_member':
         ctx.expeditionFreeWorkers = Math.max(ctx.expeditionFreeWorkers, Math.round(2 * w));
@@ -4539,22 +4813,10 @@ function findStarterBuildingSpot() {
 
 function init() {
   state.map = generateMap();
-  // v3.1: no free starter Maison. Capacity comes from the founder unit's effect.
-  // Seed the founder "Mère du Roi" on Conseil[0]. She is a fixed-name legendary
-  // who provides +3 civSlots passively until her natural death (mid-life event).
-  const mother = courtMakeUnit('mother_of_king');
-  if (mother) {
-    mother.name = 'la Mère du Roi'; // override procedural name with fixed thematic name
-    mother.stars = 1;               // starts as a +1 safety net, can grow to +3
-    mother.founder = true;
-    state.court.conseil[0] = mother;
-    state.court.starterGranted = true;
-  }
-  // Roll when she will die (king mid-life; king starts at 25).
-  state.court.motherAlive = true;
-  state.court.motherDeathAge = 45 + rInt(0, 5);
-
-  addJournal('📜 Un nouveau règne commence. La Mère du Roi veille sur la maisonnée.', 'info');
+  // v4: no founder unit, no auto Maison. Just 4 civilians in the castle and
+  // an empty Conseil/Cour. Player grows the kingdom by exploring + welcoming
+  // encounters from expeditions.
+  addJournal('📜 Un nouveau règne commence. Dessinez une zone pour partir en expédition.', 'info');
   renderAll();
   initCourt();
   applySettingsToUI();
